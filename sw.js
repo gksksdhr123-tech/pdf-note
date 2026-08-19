@@ -1,4 +1,4 @@
-const CACHE_NAME = "pdf-note-v1";
+const CACHE_NAME = "pdf-note-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -33,18 +33,20 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  // Network-first: while online, always serve what's actually deployed and
+  // refresh the cache from it. Only fall back to the cache when offline.
+  // (The old cache-first strategy meant a device that had ever loaded the
+  // app would keep serving that first-ever version forever, no matter what
+  // got pushed afterwards — this is the fix for that.)
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((res) => {
-          if (res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    fetch(event.request)
+      .then((res) => {
+        if (res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return res;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
