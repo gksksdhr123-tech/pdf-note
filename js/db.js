@@ -60,13 +60,18 @@ export async function getAllDocuments() {
 }
 
 export async function deleteDocument(id) {
-  const docStore = await tx("documents", "readwrite");
-  await reqToPromise(docStore.delete(id));
-  const strokeStore = await tx("strokes", "readwrite");
-  const all = await reqToPromise(strokeStore.getAll());
-  await Promise.all(
-    all.filter((s) => s.docId === id).map((s) => reqToPromise(strokeStore.delete(s.key)))
-  );
+  const db = await getDB();
+  const t = db.transaction(["documents", "strokes"], "readwrite");
+  t.objectStore("documents").delete(id);
+  // Stroke keys are `${docId}:${page}`; ":" (0x3A) sorts right after any
+  // digit/letter docId char, so this range covers exactly this doc's pages.
+  const range = IDBKeyRange.bound(`${id}:`, `${id}:￿`);
+  t.objectStore("strokes").delete(range);
+  return new Promise((resolve, reject) => {
+    t.oncomplete = () => resolve();
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  });
 }
 
 export async function getStrokes(docId, page) {
