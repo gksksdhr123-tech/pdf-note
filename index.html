@@ -31,14 +31,7 @@
     <button id="export-btn" class="icon-btn" title="내보내기" aria-label="내보내기">⬇</button>
   </header>
 
-  <div id="page-stage" class="page-stage">
-    <div id="page-wrap" class="page-wrap">
-      <canvas id="pdf-canvas"></canvas>
-      <canvas id="ink-canvas"></canvas>
-    </div>
-  </div>
-
-  <footer class="toolbar">
+  <div class="toolbar">
     <button id="tool-pen" class="tool-btn active" title="펜">✎</button>
     <button id="tool-eraser" class="tool-btn" title="지우개">▱</button>
     <span class="sep"></span>
@@ -61,7 +54,14 @@
     <button id="prev-page" class="tool-btn" title="이전 페이지">‹</button>
     <span id="page-label" class="page-label">1 / 1</span>
     <button id="next-page" class="tool-btn" title="다음 페이지">›</button>
-  </footer>
+  </div>
+
+  <div id="page-stage" class="page-stage">
+    <div id="page-wrap" class="page-wrap">
+      <canvas id="pdf-canvas"></canvas>
+      <canvas id="ink-canvas"></canvas>
+    </div>
+  </div>
 </section>
 
 <div id="toast" class="toast hidden"></div>

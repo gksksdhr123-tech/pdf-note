@@ -10,16 +10,18 @@ export async function exportAnnotatedPdf(docRecord, strokesByPage) {
     const pageIndex = Number(pageNumStr) - 1;
     const page = pages[pageIndex];
     if (!page || !strokes || strokes.length === 0) continue;
-    const { height } = page.getSize();
 
+    // Stroke points are already in real PDF coordinate space (same
+    // convention pdf-lib's drawLine expects: origin bottom-left, y-up),
+    // via pdf.js's convertToPdfPoint — no manual flip/scale needed here.
     for (const stroke of strokes) {
       const color = hexToRgb(stroke.color);
       for (let i = 1; i < stroke.points.length; i++) {
         const a = stroke.points[i - 1];
         const b = stroke.points[i];
         page.drawLine({
-          start: { x: a.x, y: height - a.y },
-          end: { x: b.x, y: height - b.y },
+          start: { x: a.x, y: a.y },
+          end: { x: b.x, y: b.y },
           thickness: stroke.width,
           color: rgb(color.r, color.g, color.b),
           opacity: 1,

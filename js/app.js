@@ -7,7 +7,7 @@ import {
   getStrokes,
   saveStrokes,
 } from "./db.js";
-import { loadPdf, renderPage, getPageSize } from "./pdf-engine.js";
+import { loadPdf, getPage, getUnscaledSize, renderPage } from "./pdf-engine.js";
 import { AnnotationLayer } from "./annotate.js";
 import { exportAnnotatedPdf } from "./export.js";
 
@@ -42,6 +42,7 @@ const zoomOutBtn = $("#zoom-out");
 const state = {
   docRecord: null,
   pdfDoc: null,
+  page: null, // current pdf.js page proxy
   currentPage: 1,
   totalPages: 1,
   baseScale: 1,
@@ -144,22 +145,24 @@ async function openDocument(id) {
   viewerView.classList.remove("hidden");
 
   if (!ink) {
-    ink = new AnnotationLayer(inkCanvas, { onChange: onInkChange });
+    ink = new AnnotationLayer(inkCanvas, { onChange: onInkChange, scrollContainer: pageStage });
+    window.__ink = ink; // debug handle
   }
 
   await renderCurrentPage(true);
 }
 
 async function renderCurrentPage(fitToWidth) {
-  const unscaled = await getPageSize(state.pdfDoc, state.currentPage);
+  state.page = await getPage(state.pdfDoc, state.currentPage);
+  const unscaled = getUnscaledSize(state.page);
   if (fitToWidth) {
     const available = pageStage.clientWidth - 24;
     state.baseScale = Math.min(2, available / unscaled.pageWidth);
   }
   const scale = state.baseScale * state.zoom;
 
-  await renderPage(state.pdfDoc, state.currentPage, pdfCanvas, scale);
-  ink.setViewport(unscaled.pageWidth, unscaled.pageHeight, scale);
+  const viewport = await renderPage(state.page, pdfCanvas, scale);
+  ink.setViewport(viewport);
 
   const strokes = await getStrokes(state.docRecord.id, state.currentPage);
   ink.setStrokes(strokes);

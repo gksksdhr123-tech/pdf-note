@@ -10,28 +10,32 @@ export async function loadPdf(arrayBuffer) {
   return task.promise;
 }
 
-export async function getPageSize(pdfDoc, pageNumber) {
-  const page = await pdfDoc.getPage(pageNumber);
-  const unscaled = page.getViewport({ scale: 1 });
-  return { pageWidth: unscaled.width, pageHeight: unscaled.height };
+export async function getPage(pdfDoc, pageNumber) {
+  return pdfDoc.getPage(pageNumber);
 }
 
-// Renders a page onto `canvas` at the given scale (relative to PDF points,
-// i.e. scale=1 means 1 PDF point = 1 CSS pixel). Returns {width, height} in
-// PDF point space (unscaled), used as the coordinate system for ink strokes.
-export async function renderPage(pdfDoc, pageNumber, canvas, scale) {
-  const page = await pdfDoc.getPage(pageNumber);
-  const unscaled = page.getViewport({ scale: 1 });
-  const dpr = window.devicePixelRatio || 1;
-  const viewport = page.getViewport({ scale: scale * dpr });
+export function getUnscaledSize(page) {
+  const v = page.getViewport({ scale: 1 });
+  return { pageWidth: v.width, pageHeight: v.height };
+}
 
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  canvas.style.width = `${Math.ceil(viewport.width / dpr)}px`;
-  canvas.style.height = `${Math.ceil(viewport.height / dpr)}px`;
+// Renders `page` onto `canvas` at the given scale (CSS pixels per PDF
+// point) and returns the matching CSS-space viewport. That viewport's
+// convertToPdfPoint / convertToViewportPoint methods are the single source
+// of truth for ink coordinates, so drawing stays correct across zoom and
+// page rotation without any manual math.
+export async function renderPage(page, canvas, scale) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssViewport = page.getViewport({ scale });
+  const renderViewport = page.getViewport({ scale: scale * dpr });
+
+  canvas.width = Math.ceil(renderViewport.width);
+  canvas.height = Math.ceil(renderViewport.height);
+  canvas.style.width = `${Math.ceil(cssViewport.width)}px`;
+  canvas.style.height = `${Math.ceil(cssViewport.height)}px`;
 
   const ctx = canvas.getContext("2d");
-  await page.render({ canvasContext: ctx, viewport }).promise;
+  await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
 
-  return { pageWidth: unscaled.width, pageHeight: unscaled.height };
+  return cssViewport;
 }
