@@ -20,13 +20,16 @@ export const GROUP_COLORS = {
 };
 
 export class AnnotationLayer {
-  constructor(canvas, { onChange, scrollContainer, onReachTop, onReachBottom } = {}) {
+  constructor(canvas, { onChange, scrollContainer, onReachTop, onReachBottom, onPinchStart, onPinch, onPinchEnd } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.onChange = onChange || (() => {});
     this.scrollContainer = scrollContainer;
     this.onReachTop = onReachTop || (() => {});
     this.onReachBottom = onReachBottom || (() => {});
+    this.onPinchStart = onPinchStart || (() => {});
+    this.onPinch = onPinch || (() => {});
+    this.onPinchEnd = onPinchEnd || (() => {});
     this.strokes = [];
     this.masks = [];
     this.tool = "pen";
@@ -43,7 +46,10 @@ export class AnnotationLayer {
     this._activeTool = null; // tool locked in for the current gesture
     this._erasingStrokes = null;
     this._erasingMasks = null;
-    this._pan = null; // finger-drag pan state
+    this._pan = null; // finger-drag / pan-tool drag state
+    this._touches = new Map(); // active touch pointerId -> {x, y}, for pinch
+    this._pinch = null; // {startDist}
+    this._lastPinchScale = 1;
 
     canvas.addEventListener("pointerdown", (e) => this._onDown(e));
     canvas.addEventListener("pointermove", (e) => this._onMove(e));
@@ -172,21 +178,63 @@ export class AnnotationLayer {
     return { x, y };
   }
 
+  _startPan(pointerId, clientX, clientY) {
+    this._pan = {
+      pointerId,
+      startX: clientX,
+      startY: clientY,
+      startLeft: this.scrollContainer.scrollLeft,
+      startTop: this.scrollContainer.scrollTop,
+      edgeFired: false,
+    };
+  }
+
+  _applyPanDelta(dx, dy) {
+    const targetTop = this._pan.startTop - dy;
+    const maxTop = this.scrollContainer.scrollHeight - this.scrollContainer.clientHeight;
+    this.scrollContainer.scrollLeft = this._pan.startLeft - dx;
+    this.scrollContainer.scrollTop = clamp(targetTop, 0, maxTop);
+
+    if (this.autoAdvance && !this._pan.edgeFired) {
+      if (maxTop >= 0 && targetTop > maxTop + EDGE_DRAG_THRESHOLD_CSS_PX) {
+        this._pan.edgeFired = true;
+        this.onReachBottom();
+      } else if (targetTop < -EDGE_DRAG_THRESHOLD_CSS_PX) {
+        this._pan.edgeFired = true;
+        this.onReachTop();
+      }
+    }
+  }
+
+  _onTouchDown(e) {
+    this._trySetCapture(e.pointerId);
+    this._touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this._touches.size === 2) {
+      this._pan = null;
+      const pts = Array.from(this._touches.values());
+      this._pinch = { startDist: Math.max(1, dist(pts[0], pts[1])) };
+      this._lastPinchScale = 1;
+      const midX = (pts[0].x + pts[1].x) / 2;
+      const midY = (pts[0].y + pts[1].y) / 2;
+      this.onPinchStart(midX, midY);
+    } else if (this._touches.size === 1) {
+      this._startPan(e.pointerId, e.clientX, e.clientY);
+    }
+  }
+
   _onDown(e) {
-    // Finger touch always pans (no native scrolling is possible here,
-    // touch-action: none) and so does pen/mouse when the hand tool is
-    // selected — e.g. so you can pan with the S Pen itself.
-    if (e.pointerType === "touch" || this.tool === "pan") {
-      if (e.pointerType !== "touch") e.preventDefault();
+    // No native scrolling/pinch is possible here (touch-action: none), so
+    // finger touch always drives pan/pinch ourselves.
+    if (e.pointerType === "touch") {
+      this._onTouchDown(e);
+      return;
+    }
+    // Pen/mouse pans too when the hand tool is selected — e.g. so you can
+    // move the page with the S Pen itself.
+    if (this.tool === "pan") {
+      e.preventDefault();
       this._trySetCapture(e.pointerId);
-      this._pan = {
-        pointerId: e.pointerId,
-        startX: e.clientX,
-        startY: e.clientY,
-        startLeft: this.scrollContainer.scrollLeft,
-        startTop: this.scrollContainer.scrollTop,
-        edgeFired: false,
-      };
+      this._startPan(e.pointerId, e.clientX, e.clientY);
       return;
     }
     e.preventDefault();
@@ -212,27 +260,30 @@ export class AnnotationLayer {
     }
   }
 
-  _onMove(e) {
-    if (this._pan && e.pointerId === this._pan.pointerId) {
-      const dx = e.clientX - this._pan.startX;
-      const dy = e.clientY - this._pan.startY;
-      const targetTop = this._pan.startTop - dy;
-      const maxTop = this.scrollContainer.scrollHeight - this.scrollContainer.clientHeight;
-      this.scrollContainer.scrollLeft = this._pan.startLeft - dx;
-      this.scrollContainer.scrollTop = clamp(targetTop, 0, maxTop);
-
-      if (this.autoAdvance && !this._pan.edgeFired) {
-        if (maxTop >= 0 && targetTop > maxTop + EDGE_DRAG_THRESHOLD_CSS_PX) {
-          this._pan.edgeFired = true;
-          this.onReachBottom();
-        } else if (targetTop < -EDGE_DRAG_THRESHOLD_CSS_PX) {
-          this._pan.edgeFired = true;
-          this.onReachTop();
-        }
-      }
+  _onTouchMove(e) {
+    if (!this._touches.has(e.pointerId)) return;
+    this._touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this._pinch && this._touches.size >= 2) {
+      const pts = Array.from(this._touches.values());
+      const scaleFactor = dist(pts[0], pts[1]) / this._pinch.startDist;
+      this._lastPinchScale = scaleFactor;
+      this.onPinch(scaleFactor);
       return;
     }
-    if (e.pointerType === "touch") return;
+    if (this._pan && e.pointerId === this._pan.pointerId) {
+      this._applyPanDelta(e.clientX - this._pan.startX, e.clientY - this._pan.startY);
+    }
+  }
+
+  _onMove(e) {
+    if (e.pointerType === "touch") {
+      this._onTouchMove(e);
+      return;
+    }
+    if (this._pan && e.pointerId === this._pan.pointerId) {
+      this._applyPanDelta(e.clientX - this._pan.startX, e.clientY - this._pan.startY);
+      return;
+    }
     e.preventDefault();
     if (this._activeTool === "pen" && this._active) {
       const pt = this._eventToPagePoint(e);
@@ -251,7 +302,30 @@ export class AnnotationLayer {
     }
   }
 
+  _onTouchUp(e) {
+    this._touches.delete(e.pointerId);
+    if (this._pinch) {
+      if (this._touches.size < 2) {
+        this.onPinchEnd(this._lastPinchScale);
+        this._pinch = null;
+        this._lastPinchScale = 1;
+        if (this._touches.size === 1) {
+          const [[id, pt]] = this._touches.entries();
+          this._startPan(id, pt.x, pt.y);
+        }
+      }
+      return;
+    }
+    if (this._pan && e.pointerId === this._pan.pointerId) {
+      this._pan = null;
+    }
+  }
+
   _onUp(e) {
+    if (e.pointerType === "touch") {
+      this._onTouchUp(e);
+      return;
+    }
     if (this._pan && e.pointerId === this._pan.pointerId) {
       this._pan = null;
       return;
@@ -404,6 +478,10 @@ function normalizeMask(m) {
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function distToSegment(p, a, b) {

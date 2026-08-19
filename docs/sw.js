@@ -1,4 +1,4 @@
-const CACHE_NAME = "pdf-note-v3";
+const CACHE_NAME = "pdf-note-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -9,6 +9,7 @@ const APP_SHELL = [
   "./js/pdf-engine.js",
   "./js/annotate.js",
   "./js/export.js",
+  "./js/notesfile.js",
   "./vendor/pdf.min.js",
   "./vendor/pdf.worker.min.js",
   "./vendor/pdf-lib.min.js",

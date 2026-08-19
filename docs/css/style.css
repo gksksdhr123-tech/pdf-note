@@ -145,6 +145,32 @@ body {
 }
 .doc-item .doc-delete:active { background: var(--border); }
 
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.settings-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 18px;
+}
+
+.settings-card-title {
+  font-size: 15px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+.settings-card-desc {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0 0 14px;
+}
+
 .empty-hint {
   text-align: center;
   color: var(--muted);
@@ -241,6 +267,12 @@ body {
   white-space: nowrap;
 }
 
+.tool-btn.icon-svg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .control-group {
   display: flex;
   align-items: center;
@@ -312,6 +344,108 @@ body {
   text-align: center;
   flex-shrink: 0;
 }
+
+.pages-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 12px;
+  padding: 16px;
+  align-content: start;
+}
+
+.page-cell {
+  position: relative;
+  background: var(--surface);
+  border-radius: 10px;
+  box-shadow: var(--shadow-sm);
+  padding: 6px;
+  cursor: pointer;
+  text-align: center;
+}
+.page-cell:active { background: var(--surface-2); }
+
+.page-cell canvas {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  display: block;
+  background: #fff;
+}
+
+.page-cell .page-num {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.page-cell .page-del-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.insert-tile {
+  width: 100%;
+  min-height: 60px;
+  border: 1.5px dashed var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  align-self: center;
+}
+.insert-tile:active { background: var(--surface-2); }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .4);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-overlay.hidden { display: none; }
+
+.modal-sheet {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border-radius: 18px 18px 0 0;
+  padding: 10px 16px max(16px, env(safe-area-inset-bottom));
+  box-shadow: var(--shadow);
+}
+
+.modal-title {
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+  padding: 10px 0 4px;
+}
+
+.modal-option, .modal-cancel {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 14px 0;
+  font-size: 15px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+}
+.modal-option:active, .modal-cancel:active { background: var(--surface-2); }
+.modal-cancel { color: var(--muted); margin-top: 6px; }
 
 .toast {
   position: fixed;

@@ -1,5 +1,5 @@
 const DB_NAME = "pdf-note";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -14,6 +14,12 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains("masks")) {
         db.createObjectStore("masks", { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains("settings")) {
+        db.createObjectStore("settings", { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains("pageplans")) {
+        db.createObjectStore("pageplans", { keyPath: "docId" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -64,7 +70,7 @@ export async function getAllDocuments() {
 
 export async function deleteDocument(id) {
   const db = await getDB();
-  const t = db.transaction(["documents", "strokes", "masks"], "readwrite");
+  const t = db.transaction(["documents", "strokes", "masks", "pageplans"], "readwrite");
   t.objectStore("documents").delete(id);
   // Stroke/mask keys are `${docId}:${page}`; ":" (0x3A) sorts right after
   // any digit/letter docId char, so this range covers exactly this doc's
@@ -72,6 +78,7 @@ export async function deleteDocument(id) {
   const range = IDBKeyRange.bound(`${id}:`, `${id}:￿`);
   t.objectStore("strokes").delete(range);
   t.objectStore("masks").delete(range);
+  t.objectStore("pageplans").delete(id);
   return new Promise((resolve, reject) => {
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
@@ -124,4 +131,49 @@ export async function saveMasks(docId, page, masks) {
   return reqToPromise(
     store.put({ key: `${docId}:${page}`, docId, page, masks })
   );
+}
+
+// Every stroke/mask record for a document, grouped by page key — used to
+// write a full JSON snapshot of a document's notes to the backup folder.
+export async function getAllNotesForDoc(docId) {
+  // Issue+await each store's request before opening the next transaction —
+  // leaving a transaction idle across an extra await (e.g. opening both
+  // transactions up front) risks it auto-committing before its request is
+  // ever issued.
+  const strokeStore = await tx("strokes", "readonly");
+  const allStrokes = await reqToPromise(strokeStore.getAll());
+  const maskStore = await tx("masks", "readonly");
+  const allMasks = await reqToPromise(maskStore.getAll());
+  const pages = {};
+  for (const rec of allStrokes) {
+    if (rec.docId !== docId || rec.strokes.length === 0) continue;
+    (pages[rec.page] ||= {}).strokes = rec.strokes;
+  }
+  for (const rec of allMasks) {
+    if (rec.docId !== docId || rec.masks.length === 0) continue;
+    (pages[rec.page] ||= {}).masks = rec.masks;
+  }
+  return pages;
+}
+
+export async function getSetting(key) {
+  const store = await tx("settings", "readonly");
+  const rec = await reqToPromise(store.get(key));
+  return rec ? rec.value : undefined;
+}
+
+export async function setSetting(key, value) {
+  const store = await tx("settings", "readwrite");
+  return reqToPromise(store.put({ key, value }));
+}
+
+export async function getPagePlan(docId) {
+  const store = await tx("pageplans", "readonly");
+  const rec = await reqToPromise(store.get(docId));
+  return rec ? rec.order : null;
+}
+
+export async function savePagePlan(docId, order) {
+  const store = await tx("pageplans", "readwrite");
+  return reqToPromise(store.put({ docId, order }));
 }
