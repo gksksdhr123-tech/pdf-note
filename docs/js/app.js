@@ -41,6 +41,7 @@ const toast = $("#toast");
 const toolPen = $("#tool-pen");
 const toolEraser = $("#tool-eraser");
 const toolMask = $("#tool-mask");
+const toolPan = $("#tool-pan");
 const penControls = $("#pen-controls");
 const maskControls = $("#mask-controls");
 const undoBtn = $("#undo-btn");
@@ -52,6 +53,7 @@ const zoomOutBtn = $("#zoom-out");
 const memorizeToggle = $("#memorize-toggle");
 const revealAllBtn = $("#reveal-all-btn");
 const hideAllBtn = $("#hide-all-btn");
+const autoAdvanceToggle = $("#auto-advance-toggle");
 
 const cardsBackBtn = $("#cards-back-btn");
 const cardListEl = $("#card-list");
@@ -68,6 +70,7 @@ const studyBaseCanvas = document.createElement("canvas"); // offscreen: pristine
 
 const state = {
   docRecord: null,
+  currentFile: null, // the File/Blob actually backing the open document
   pdfDoc: null,
   page: null, // current pdf.js page proxy
   currentPage: 1,
@@ -83,6 +86,13 @@ const state = {
 };
 
 let ink = null;
+let autoAdvance = localStorage.getItem("pdf-note:auto-advance") !== "off"; // default on
+
+// File System Access API lets us keep a lightweight, reusable reference to
+// a file on disk instead of copying the whole PDF into IndexedDB — avoids
+// storing every PDF twice. Falls back to caching the file's bytes (the old
+// behavior) on browsers that don't support it.
+const supportsFilePicker = typeof window.showOpenFilePicker === "function";
 
 function showToast(msg) {
   toast.textContent = msg;
@@ -139,43 +149,105 @@ function formatDate(ts) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-addBtn.addEventListener("click", () => fileInput.click());
-
-fileInput.addEventListener("change", async () => {
-  const file = fileInput.files[0];
-  fileInput.value = "";
-  if (!file) return;
-  showToast("불러오는 중...");
-  const id = await hashFile(file);
-  let doc = await getDocument(id);
-  if (!doc) {
-    doc = {
-      id,
-      name: file.name,
-      size: file.size,
-      blob: file,
-      addedAt: Date.now(),
-      lastOpenedAt: Date.now(),
+// Opens the native file picker. Prefers the File System Access API, which
+// hands back a reusable handle we can silently re-read from next time
+// instead of copying the whole PDF into IndexedDB; falls back to a classic
+// <input type=file> (one-shot File, no handle) where that API isn't
+// available. Resolves to null if the user cancels.
+async function pickPdfFile() {
+  if (supportsFilePicker) {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        types: [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }],
+      });
+      return { file: await handle.getFile(), handle };
+    } catch (err) {
+      if (err && err.name === "AbortError") return null;
+      // Some other failure (e.g. policy-blocked) — fall through to the
+      // classic picker below instead of leaving the user stuck.
+    }
+  }
+  return new Promise((resolve) => {
+    const onChange = () => {
+      fileInput.removeEventListener("change", onChange);
+      const file = fileInput.files[0];
+      fileInput.value = "";
+      resolve(file ? { file, handle: null } : null);
     };
+    fileInput.addEventListener("change", onChange);
+    fileInput.click();
+  });
+}
+
+// Gets the actual bytes for a saved document: from its file handle
+// (re-checking/re-requesting permission), or its cached blob (documents
+// saved before this device supported file handles), or — if neither works
+// anymore — by asking the user to re-locate the file.
+async function resolveFile(doc) {
+  if (doc.handle) {
+    try {
+      let perm = await doc.handle.queryPermission({ mode: "read" });
+      if (perm !== "granted") perm = await doc.handle.requestPermission({ mode: "read" });
+      if (perm === "granted") return await doc.handle.getFile();
+    } catch (err) {
+      console.warn("file handle access failed", err);
+    }
+  }
+  if (doc.blob) return doc.blob;
+
+  showToast("파일을 다시 선택해주세요");
+  const picked = await pickPdfFile();
+  if (!picked) return null;
+  const pickedId = await hashFile(picked.file);
+  if (pickedId !== doc.id) {
+    showToast("선택한 파일이 이 항목과 달라요");
+    return null;
+  }
+  if (picked.handle) {
+    doc.handle = picked.handle;
     await putDocument(doc);
   }
-  openDocument(id);
+  return picked.file;
+}
+
+addBtn.addEventListener("click", async () => {
+  const picked = await pickPdfFile();
+  if (!picked) return;
+  showToast("불러오는 중...");
+  const id = await hashFile(picked.file);
+  let doc = await getDocument(id);
+  if (!doc) {
+    doc = { id, name: picked.file.name, size: picked.file.size, addedAt: Date.now(), lastOpenedAt: Date.now() };
+    if (picked.handle) doc.handle = picked.handle;
+    else doc.blob = picked.file; // no File System Access support: only way to remember it
+    await putDocument(doc);
+  } else if (picked.handle && !doc.handle) {
+    doc.handle = picked.handle; // upgrade a handle-less record now that we have one
+    await putDocument(doc);
+  }
+  openDocument(id, picked.file);
 });
 
 // ---------- Viewer view ----------
 
-async function openDocument(id) {
+async function openDocument(id, preFetchedFile) {
   const doc = await getDocument(id);
   if (!doc) return;
+
+  const file = preFetchedFile || (await resolveFile(doc));
+  if (!file) return;
+
   doc.lastOpenedAt = Date.now();
+  doc.size = file.size;
   await putDocument(doc);
 
   state.docRecord = doc;
+  state.currentFile = file;
   state.currentPage = 1;
   state.zoom = 1;
   state.history = new Map();
 
-  const buf = await doc.blob.arrayBuffer();
+  const buf = await file.arrayBuffer();
   state.pdfDoc = await loadPdf(buf);
   state.totalPages = state.pdfDoc.numPages;
 
@@ -184,7 +256,13 @@ async function openDocument(id) {
   viewerView.classList.remove("hidden");
 
   if (!ink) {
-    ink = new AnnotationLayer(inkCanvas, { onChange: onInkChange, scrollContainer: pageStage });
+    ink = new AnnotationLayer(inkCanvas, {
+      onChange: onInkChange,
+      scrollContainer: pageStage,
+      onReachBottom: goToNextPageAuto,
+      onReachTop: goToPrevPageAuto,
+    });
+    ink.setAutoAdvance(autoAdvance);
     window.__ink = ink; // debug handle
   }
   ink.resetGroups();
@@ -194,6 +272,20 @@ async function openDocument(id) {
   memorizeToggle.classList.remove("active");
 
   await renderCurrentPage(true);
+}
+
+async function goToNextPageAuto() {
+  if (state.currentPage >= state.totalPages) return;
+  state.currentPage++;
+  await renderCurrentPage(false);
+  pageStage.scrollTop = 0;
+}
+
+async function goToPrevPageAuto() {
+  if (state.currentPage <= 1) return;
+  state.currentPage--;
+  await renderCurrentPage(false);
+  pageStage.scrollTop = pageStage.scrollHeight;
 }
 
 async function renderCurrentPage(fitToWidth) {
@@ -349,9 +441,9 @@ zoomOutBtn.addEventListener("click", async () => {
   await renderCurrentPage(false);
 });
 
-// ---------- Tools: pen / eraser / mask ----------
+// ---------- Tools: pen / eraser / mask / pan ----------
 
-const toolButtons = { pen: toolPen, eraser: toolEraser, mask: toolMask };
+const toolButtons = { pen: toolPen, eraser: toolEraser, mask: toolMask, pan: toolPan };
 
 function selectTool(tool) {
   ink.setTool(tool);
@@ -363,6 +455,15 @@ function selectTool(tool) {
 toolPen.addEventListener("click", () => selectTool("pen"));
 toolEraser.addEventListener("click", () => selectTool("eraser"));
 toolMask.addEventListener("click", () => selectTool("mask"));
+toolPan.addEventListener("click", () => selectTool("pan"));
+
+autoAdvanceToggle.classList.toggle("active", autoAdvance);
+autoAdvanceToggle.addEventListener("click", () => {
+  autoAdvance = !autoAdvance;
+  localStorage.setItem("pdf-note:auto-advance", autoAdvance ? "on" : "off");
+  autoAdvanceToggle.classList.toggle("active", autoAdvance);
+  if (ink) ink.setAutoAdvance(autoAdvance);
+});
 
 $$(".swatch").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -436,9 +537,9 @@ exportBtn.addEventListener("click", async () => {
       const strokes = p === state.currentPage ? ink.getStrokes() : await getStrokes(state.docRecord.id, p);
       const masks = p === state.currentPage ? ink.getMasks() : await getMasks(state.docRecord.id, p);
       strokesByPage[p] = strokes;
-      masksByPage[p] = masks.filter((m) => ink.isExportOpaque(m.group));
+      masksByPage[p] = masks.filter((m) => ink.isMaskOpaque(m.group));
     }
-    await exportAnnotatedPdf(state.docRecord, strokesByPage, masksByPage);
+    await exportAnnotatedPdf(state.currentFile, state.docRecord.name, strokesByPage, masksByPage);
     showToast("저장 완료");
   } catch (err) {
     console.error(err);
@@ -531,7 +632,9 @@ async function renderStudyCard() {
   if (!pdfDoc) {
     const doc = await getDocument(entry.docId);
     if (!doc) return;
-    const buf = await doc.blob.arrayBuffer();
+    const file = await resolveFile(doc);
+    if (!file) return;
+    const buf = await file.arrayBuffer();
     pdfDoc = await loadPdf(buf);
     state.studyPdfCache.set(entry.docId, pdfDoc);
   }

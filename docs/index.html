@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>PDF Note</title>
-<meta name="theme-color" content="#1c1c1e" />
+<meta name="theme-color" content="#c15f3c" />
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="icons/icon.svg" />
@@ -68,6 +68,7 @@
     <button id="tool-pen" class="tool-btn active" title="펜">✎</button>
     <button id="tool-eraser" class="tool-btn" title="지우개">▱</button>
     <button id="tool-mask" class="tool-btn" title="가리기 (암기용)">▬</button>
+    <button id="tool-pan" class="tool-btn" title="이동 (손모양)">✋</button>
     <span class="sep"></span>
     <div id="pen-controls" class="control-group">
       <button class="swatch" data-color="#e04c4c" style="background:#e04c4c"></button>
@@ -98,6 +99,8 @@
     <button id="prev-page" class="tool-btn" title="이전 페이지">‹</button>
     <span id="page-label" class="page-label">1 / 1</span>
     <button id="next-page" class="tool-btn" title="다음 페이지">›</button>
+    <span class="sep"></span>
+    <button id="auto-advance-toggle" class="tool-btn label-btn" title="스크롤 끝에서 자동으로 다음 페이지">자동 넘김</button>
   </div>
 
   <div class="toolbar memorize-bar">

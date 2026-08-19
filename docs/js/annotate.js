@@ -9,6 +9,7 @@
 
 const ERASE_RADIUS_CSS_PX = 14;
 const MIN_MASK_PDF_SIZE = 3;
+const EDGE_DRAG_THRESHOLD_CSS_PX = 40;
 
 export const GROUP_COLORS = {
   1: "#1c1c1e",
@@ -19,11 +20,13 @@ export const GROUP_COLORS = {
 };
 
 export class AnnotationLayer {
-  constructor(canvas, { onChange, scrollContainer } = {}) {
+  constructor(canvas, { onChange, scrollContainer, onReachTop, onReachBottom } = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.onChange = onChange || (() => {});
     this.scrollContainer = scrollContainer;
+    this.onReachTop = onReachTop || (() => {});
+    this.onReachBottom = onReachBottom || (() => {});
     this.strokes = [];
     this.masks = [];
     this.tool = "pen";
@@ -32,6 +35,7 @@ export class AnnotationLayer {
     this.currentGroup = 1;
     this.memorizeOn = false;
     this.groupActive = new Map(); // group -> bool, default true (unset = active)
+    this.autoAdvance = true;
     this.viewport = null;
 
     this._active = null; // in-progress pen stroke
@@ -85,7 +89,10 @@ export class AnnotationLayer {
 
   setTool(tool) {
     this.tool = tool;
-    this._redraw(); // mask tool forces edit-view; switching away restores it
+  }
+
+  setAutoAdvance(enabled) {
+    this.autoAdvance = enabled;
   }
 
   setColor(color) {
@@ -127,10 +134,11 @@ export class AnnotationLayer {
     this._redraw();
   }
 
-  // Whether a mask would render opaque in an exported PDF — same as
-  // _isGroupOpaque but ignores the "mask tool selected" edit-view override,
-  // since export always reflects the persisted memorize/group state.
-  isExportOpaque(group) {
+  // Whether a mask currently renders opaque (hiding content) — true when
+  // memorize mode is on and this group hasn't been individually revealed.
+  // Same rule on screen and at export time, regardless of which tool is
+  // selected, so toggling memorize mode always visibly does something.
+  isMaskOpaque(group) {
     if (!this.memorizeOn) return false;
     return this.isGroupActive(group);
   }
@@ -165,9 +173,11 @@ export class AnnotationLayer {
   }
 
   _onDown(e) {
-    if (e.pointerType === "touch") {
-      // No native scrolling is possible here (touch-action: none), so a
-      // single finger drags the page ourselves. Pen and mouse always draw.
+    // Finger touch always pans (no native scrolling is possible here,
+    // touch-action: none) and so does pen/mouse when the hand tool is
+    // selected — e.g. so you can pan with the S Pen itself.
+    if (e.pointerType === "touch" || this.tool === "pan") {
+      if (e.pointerType !== "touch") e.preventDefault();
       this._trySetCapture(e.pointerId);
       this._pan = {
         pointerId: e.pointerId,
@@ -175,6 +185,7 @@ export class AnnotationLayer {
         startY: e.clientY,
         startLeft: this.scrollContainer.scrollLeft,
         startTop: this.scrollContainer.scrollTop,
+        edgeFired: false,
       };
       return;
     }
@@ -205,8 +216,20 @@ export class AnnotationLayer {
     if (this._pan && e.pointerId === this._pan.pointerId) {
       const dx = e.clientX - this._pan.startX;
       const dy = e.clientY - this._pan.startY;
+      const targetTop = this._pan.startTop - dy;
+      const maxTop = this.scrollContainer.scrollHeight - this.scrollContainer.clientHeight;
       this.scrollContainer.scrollLeft = this._pan.startLeft - dx;
-      this.scrollContainer.scrollTop = this._pan.startTop - dy;
+      this.scrollContainer.scrollTop = clamp(targetTop, 0, maxTop);
+
+      if (this.autoAdvance && !this._pan.edgeFired) {
+        if (maxTop >= 0 && targetTop > maxTop + EDGE_DRAG_THRESHOLD_CSS_PX) {
+          this._pan.edgeFired = true;
+          this.onReachBottom();
+        } else if (targetTop < -EDGE_DRAG_THRESHOLD_CSS_PX) {
+          this._pan.edgeFired = true;
+          this.onReachTop();
+        }
+      }
       return;
     }
     if (e.pointerType === "touch") return;
@@ -319,15 +342,6 @@ export class AnnotationLayer {
     ctx.stroke();
   }
 
-  // Fully opaque (hides content) only when actually quizzing that group;
-  // while the mask tool is selected we always show the see-through edit
-  // view so you can see what you're covering.
-  _isGroupOpaque(group) {
-    if (this.tool === "mask") return false;
-    if (!this.memorizeOn) return false;
-    return this.isGroupActive(group);
-  }
-
   _drawMask(mask) {
     const c0 = this._toCanvasPoint({ x: mask.x, y: mask.y });
     const c1 = this._toCanvasPoint({ x: mask.x + mask.w, y: mask.y + mask.h });
@@ -336,7 +350,7 @@ export class AnnotationLayer {
     const rw = Math.abs(c1.x - c0.x);
     const rh = Math.abs(c1.y - c0.y);
     const ctx = this.ctx;
-    if (this._isGroupOpaque(mask.group)) {
+    if (this.isMaskOpaque(mask.group)) {
       ctx.globalAlpha = 1;
       ctx.fillStyle = mask.color;
       ctx.fillRect(rx, ry, rw, rh);

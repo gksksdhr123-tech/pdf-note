@@ -1,11 +1,13 @@
 // Flattens ink strokes (and any currently-opaque memorization masks) onto a
-// copy of the original PDF and triggers a download. The original blob
-// stored in IndexedDB is never touched. `masksByPage` should already be
-// filtered to only the masks that are opaque in the app's current view —
-// this exports exactly what memorization mode currently shows on screen.
-export async function exportAnnotatedPdf(docRecord, strokesByPage, masksByPage = {}) {
+// copy of the original PDF and triggers a download. `file` is the original
+// PDF bytes (a File/Blob) — never modified, never what gets written back to
+// storage; this only ever produces a new downloaded copy. `masksByPage`
+// should already be filtered to only the masks that are opaque in the app's
+// current view — this exports exactly what memorization mode currently
+// shows on screen.
+export async function exportAnnotatedPdf(file, fileName, strokesByPage, masksByPage = {}) {
   const { PDFDocument, rgb } = window.PDFLib;
-  const bytes = await docRecord.blob.arrayBuffer();
+  const bytes = await file.arrayBuffer();
   const pdfDoc = await PDFDocument.load(bytes);
   const pages = pdfDoc.getPages();
 
@@ -57,7 +59,7 @@ export async function exportAnnotatedPdf(docRecord, strokesByPage, masksByPage =
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = withSuffix(docRecord.name, "_note");
+  a.download = withSuffix(fileName, "_note");
   document.body.appendChild(a);
   a.click();
   a.remove();
