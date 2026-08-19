@@ -28,6 +28,7 @@
 ES 모듈과 Service Worker를 쓰기 때문에 `file://`로 직접 열면 동작하지 않습니다. 아무 정적 서버로 실행하세요.
 
 ```bash
+cd docs
 npx serve .
 # 또는
 python3 -m http.server 8080
@@ -35,23 +36,23 @@ python3 -m http.server 8080
 
 ## GitHub Pages로 배포하기
 
-1. GitHub 저장소 설정 → Pages → Source를 `main` 브랜치 `/ (root)`로 지정합니다.
-2. 몇 분 후 `https://<사용자명>.github.io/pdf-note/` 로 접속됩니다.
-3. 태블릿 브라우저(Chrome 등)에서 접속 후 "홈 화면에 추가"로 설치하면 일반 앱처럼 아이콘을 눌러 바로 실행할 수 있습니다.
+저장소 Settings → Pages → Source가 `main` 브랜치의 `/docs` 폴더로 지정돼 있고, 앱 파일이 전부 `docs/` 아래에 있어서 `main`에 푸시하면 그대로 배포됩니다. `https://<사용자명>.github.io/pdf-note/` 로 접속하면 되고, 태블릿 브라우저(Chrome 등)에서 접속 후 "홈 화면에 추가"로 설치하면 일반 앱처럼 아이콘을 눌러 바로 실행할 수 있습니다.
 
 ## 폴더 구조
 
 ```
-index.html        진입점, 홈 / 뷰어 / 암기카드 목록 / 카드 학습 화면 마크업
-css/style.css      스타일
-js/app.js          화면 전환, 이벤트 연결, 암기카드 목록·학습 화면 렌더링
-js/db.js           IndexedDB 저장 (문서, 페이지별 필기·마스크)
-js/pdf-engine.js    pdf.js 래퍼 (렌더링)
-js/annotate.js      필기+마스크 캔버스 레이어 (펜/지우개/가리기, 압력, undo/redo, 암기모드 상태)
-js/export.js        pdf-lib로 필기·마스크를 합쳐 새 PDF 내보내기
-vendor/             pdf.js, pdf-lib 빌드 결과물 (오프라인 동작을 위해 저장소에 포함)
-manifest.webmanifest, sw.js  PWA 설정
+docs/index.html        진입점, 홈 / 뷰어 / 암기카드 목록 / 카드 학습 화면 마크업
+docs/css/style.css      스타일
+docs/js/app.js          화면 전환, 이벤트 연결, 암기카드 목록·학습 화면 렌더링
+docs/js/db.js           IndexedDB 저장 (문서, 페이지별 필기·마스크)
+docs/js/pdf-engine.js    pdf.js 래퍼 (렌더링)
+docs/js/annotate.js      필기+마스크 캔버스 레이어 (펜/지우개/가리기, 압력, undo/redo, 암기모드 상태)
+docs/js/export.js        pdf-lib로 필기·마스크를 합쳐 새 PDF 내보내기
+docs/vendor/             pdf.js, pdf-lib 빌드 결과물 (오프라인 동작을 위해 저장소에 포함)
+docs/manifest.webmanifest, docs/sw.js  PWA 설정
 ```
+
+(파일들이 `docs/` 아래에 있는 이유는 순전히 GitHub Pages의 배포 소스 설정이 `/docs`로 돼 있기 때문입니다 — Settings → Pages에서 소스를 `/ (root)`로 바꾸면 언제든 루트로 다시 옮길 수 있습니다.)
 
 ## 알려진 제한 (다음 버전 후보)
 

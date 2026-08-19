@@ -600,6 +600,10 @@ renderHome();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    // updateViaCache:"none" stops the browser from ever serving sw.js
+    // itself out of HTTP cache when checking for updates — otherwise a
+    // cached response for this exact file can make the browser think
+    // there's nothing new to install, even after bumping CACHE_NAME.
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => {});
   });
 }
