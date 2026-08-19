@@ -1,13 +1,22 @@
-// Ink annotation layer. Stroke points are stored in real PDF coordinate
-// space (pdf.js's convertToPdfPoint output: origin bottom-left, y-up,
-// rotation already resolved) so they stay correct across zoom/rotation and
-// feed straight into pdf-lib for export with no extra math.
+// Ink + memorization-mask layer. Stroke/mask points are stored in real PDF
+// coordinate space (pdf.js's convertToPdfPoint output: origin bottom-left,
+// y-up, rotation already resolved) so they stay correct across zoom/rotation
+// and feed straight into pdf-lib for export with no extra math.
 //
 // touch-action is "none" on the canvas (see style.css) so the browser never
 // tries to interpret an in-progress pen stroke as a scroll/pan gesture —
 // we do all touch panning ourselves below, and pen/mouse always draw.
 
 const ERASE_RADIUS_CSS_PX = 14;
+const MIN_MASK_PDF_SIZE = 3;
+
+export const GROUP_COLORS = {
+  1: "#1c1c1e",
+  2: "#c0392b",
+  3: "#2f6fed",
+  4: "#1f8a54",
+  5: "#8e44ad",
+};
 
 export class AnnotationLayer {
   constructor(canvas, { onChange, scrollContainer } = {}) {
@@ -16,14 +25,20 @@ export class AnnotationLayer {
     this.onChange = onChange || (() => {});
     this.scrollContainer = scrollContainer;
     this.strokes = [];
+    this.masks = [];
     this.tool = "pen";
     this.color = "#1c1c1e";
     this.width = 2;
+    this.currentGroup = 1;
+    this.memorizeOn = false;
+    this.groupActive = new Map(); // group -> bool, default true (unset = active)
     this.viewport = null;
 
     this._active = null; // in-progress pen stroke
+    this._activeMask = null; // in-progress mask rect
     this._activeTool = null; // tool locked in for the current gesture
-    this._erasing = null; // Set of indices removed during current erase drag
+    this._erasingStrokes = null;
+    this._erasingMasks = null;
     this._pan = null; // finger-drag pan state
 
     canvas.addEventListener("pointerdown", (e) => this._onDown(e));
@@ -55,12 +70,22 @@ export class AnnotationLayer {
     return this.strokes;
   }
 
+  setMasks(masks) {
+    this.masks = masks || [];
+    this._redraw();
+  }
+
+  getMasks() {
+    return this.masks;
+  }
+
   redraw() {
     this._redraw();
   }
 
   setTool(tool) {
     this.tool = tool;
+    this._redraw(); // mask tool forces edit-view; switching away restores it
   }
 
   setColor(color) {
@@ -69,6 +94,45 @@ export class AnnotationLayer {
 
   setWidth(width) {
     this.width = width;
+  }
+
+  setCurrentGroup(group) {
+    this.currentGroup = group;
+  }
+
+  setMemorizeOn(on) {
+    this.memorizeOn = on;
+    this._redraw();
+  }
+
+  setGroupActive(group, active) {
+    this.groupActive.set(group, active);
+    this._redraw();
+  }
+
+  isGroupActive(group) {
+    return this.groupActive.get(group) !== false;
+  }
+
+  setAllGroupsActive(active) {
+    for (let g = 1; g <= 5; g++) this.groupActive.set(g, active);
+    this._redraw();
+  }
+
+  // Fresh document, fresh quiz state: no groups mid-review, nothing hidden.
+  resetGroups() {
+    this.groupActive = new Map();
+    this.currentGroup = 1;
+    this.memorizeOn = false;
+    this._redraw();
+  }
+
+  // Whether a mask would render opaque in an exported PDF — same as
+  // _isGroupOpaque but ignores the "mask tool selected" edit-view override,
+  // since export always reflects the persisted memorize/group state.
+  isExportOpaque(group) {
+    if (!this.memorizeOn) return false;
+    return this.isGroupActive(group);
   }
 
   // Pen/mouse only. Barrel button held (buttons bit 2) always means eraser,
@@ -121,8 +185,19 @@ export class AnnotationLayer {
     if (this._activeTool === "pen") {
       this._active = { color: this.color, width: this.width, points: [pt] };
     } else if (this._activeTool === "eraser") {
-      this._erasing = new Set();
+      this._erasingStrokes = new Set();
+      this._erasingMasks = new Set();
       this._eraseAt(pt);
+    } else if (this._activeTool === "mask") {
+      this._activeMask = {
+        group: this.currentGroup,
+        color: GROUP_COLORS[this.currentGroup] || "#1c1c1e",
+        x0: pt.x,
+        y0: pt.y,
+        x1: pt.x,
+        y1: pt.y,
+      };
+      this._redraw();
     }
   }
 
@@ -142,9 +217,14 @@ export class AnnotationLayer {
       const prev = pts[pts.length - 1];
       pts.push(pt);
       this._drawSegment(prev, pt, this._active.color, this._active.width);
-    } else if (this._activeTool === "eraser" && this._erasing) {
+    } else if (this._activeTool === "eraser" && (this._erasingStrokes || this._erasingMasks)) {
       const pt = this._eventToPagePoint(e);
       this._eraseAt(pt);
+    } else if (this._activeTool === "mask" && this._activeMask) {
+      const pt = this._eventToPagePoint(e);
+      this._activeMask.x1 = pt.x;
+      this._activeMask.y1 = pt.y;
+      this._redraw();
     }
   }
 
@@ -156,22 +236,41 @@ export class AnnotationLayer {
     if (this._activeTool === "pen" && this._active) {
       if (this._active.points.length > 1) {
         this.strokes.push(this._active);
-        this.onChange({ type: "add", stroke: this._active });
+        this.onChange({ kind: "stroke", type: "add", stroke: this._active });
       }
       this._active = null;
-    } else if (this._activeTool === "eraser" && this._erasing) {
-      if (this._erasing.size > 0) {
+    } else if (this._activeTool === "eraser") {
+      if (this._erasingStrokes && this._erasingStrokes.size > 0) {
         const removed = [];
         const kept = [];
         this.strokes.forEach((s, i) => {
-          if (this._erasing.has(i)) removed.push(s);
+          if (this._erasingStrokes.has(i)) removed.push(s);
           else kept.push(s);
         });
         this.strokes = kept;
-        this.onChange({ type: "erase", strokes: removed });
-        this._redraw();
+        this.onChange({ kind: "stroke", type: "erase", strokes: removed });
       }
-      this._erasing = null;
+      if (this._erasingMasks && this._erasingMasks.size > 0) {
+        const removed = [];
+        const kept = [];
+        this.masks.forEach((m, i) => {
+          if (this._erasingMasks.has(i)) removed.push(m);
+          else kept.push(m);
+        });
+        this.masks = kept;
+        this.onChange({ kind: "mask", type: "erase", masks: removed });
+      }
+      this._erasingStrokes = null;
+      this._erasingMasks = null;
+      this._redraw();
+    } else if (this._activeTool === "mask" && this._activeMask) {
+      const mask = normalizeMask(this._activeMask);
+      this._activeMask = null;
+      if (mask.w >= MIN_MASK_PDF_SIZE && mask.h >= MIN_MASK_PDF_SIZE) {
+        this.masks.push(mask);
+        this.onChange({ kind: "mask", type: "add", mask });
+      }
+      this._redraw();
     }
     this._activeTool = null;
   }
@@ -180,13 +279,25 @@ export class AnnotationLayer {
     const threshold = ERASE_RADIUS_CSS_PX / this.viewport.scale;
     let changed = false;
     this.strokes.forEach((stroke, i) => {
-      if (this._erasing.has(i)) return;
+      if (this._erasingStrokes.has(i)) return;
       for (let j = 1; j < stroke.points.length; j++) {
         if (distToSegment(pt, stroke.points[j - 1], stroke.points[j]) < threshold) {
-          this._erasing.add(i);
+          this._erasingStrokes.add(i);
           changed = true;
           break;
         }
+      }
+    });
+    this.masks.forEach((mask, i) => {
+      if (this._erasingMasks.has(i)) return;
+      if (
+        pt.x >= mask.x - threshold &&
+        pt.x <= mask.x + mask.w + threshold &&
+        pt.y >= mask.y - threshold &&
+        pt.y <= mask.y + mask.h + threshold
+      ) {
+        this._erasingMasks.add(i);
+        changed = true;
       }
     });
     if (changed) this._redraw();
@@ -208,12 +319,46 @@ export class AnnotationLayer {
     ctx.stroke();
   }
 
+  // Fully opaque (hides content) only when actually quizzing that group;
+  // while the mask tool is selected we always show the see-through edit
+  // view so you can see what you're covering.
+  _isGroupOpaque(group) {
+    if (this.tool === "mask") return false;
+    if (!this.memorizeOn) return false;
+    return this.isGroupActive(group);
+  }
+
+  _drawMask(mask) {
+    const c0 = this._toCanvasPoint({ x: mask.x, y: mask.y });
+    const c1 = this._toCanvasPoint({ x: mask.x + mask.w, y: mask.y + mask.h });
+    const rx = Math.min(c0.x, c1.x);
+    const ry = Math.min(c0.y, c1.y);
+    const rw = Math.abs(c1.x - c0.x);
+    const rh = Math.abs(c1.y - c0.y);
+    const ctx = this.ctx;
+    if (this._isGroupOpaque(mask.group)) {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = mask.color;
+      ctx.fillRect(rx, ry, rw, rh);
+    } else {
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = mask.color;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = mask.color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.setLineDash([]);
+    }
+  }
+
   _redraw() {
     if (!this.viewport) return;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.viewport.width, this.viewport.height);
     this.strokes.forEach((stroke, i) => {
-      if (this._erasing && this._erasing.has(i)) return;
+      if (this._erasingStrokes && this._erasingStrokes.has(i)) return;
       for (let j = 1; j < stroke.points.length; j++) {
         this._drawSegment(stroke.points[j - 1], stroke.points[j], stroke.color, stroke.width);
       }
@@ -224,7 +369,23 @@ export class AnnotationLayer {
         this._drawSegment(pts[j - 1], pts[j], this._active.color, this._active.width);
       }
     }
+    this.masks.forEach((mask, i) => {
+      if (this._erasingMasks && this._erasingMasks.has(i)) return;
+      this._drawMask(mask);
+    });
+    if (this._activeMask) this._drawMask(normalizeMask(this._activeMask));
   }
+}
+
+function normalizeMask(m) {
+  return {
+    group: m.group,
+    color: m.color,
+    x: Math.min(m.x0, m.x1),
+    y: Math.min(m.y0, m.y1),
+    w: Math.abs(m.x1 - m.x0),
+    h: Math.abs(m.y1 - m.y0),
+  };
 }
 
 function clamp(v, min, max) {

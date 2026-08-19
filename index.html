@@ -16,11 +16,44 @@
 <section id="home-view" class="view">
   <header class="topbar">
     <h1>PDF Note</h1>
-    <button id="add-btn" class="icon-btn" title="PDF 추가" aria-label="PDF 추가">+</button>
+    <div class="control-group">
+      <button id="cards-btn" class="icon-btn" title="암기카드" aria-label="암기카드">🗂</button>
+      <button id="add-btn" class="icon-btn" title="PDF 추가" aria-label="PDF 추가">+</button>
+    </div>
   </header>
   <ul id="doc-list" class="doc-list"></ul>
   <p id="empty-hint" class="empty-hint">오른쪽 위 + 버튼으로 PDF를 불러오세요.</p>
   <input id="file-input" type="file" accept="application/pdf" hidden />
+</section>
+
+<!-- Cards view: every page that has memorization masks, across all docs -->
+<section id="cards-view" class="view hidden">
+  <header class="topbar viewer-topbar">
+    <button id="cards-back-btn" class="icon-btn" title="뒤로" aria-label="뒤로">←</button>
+    <span class="doc-title">암기카드</span>
+    <span style="width:40px"></span>
+  </header>
+  <ul id="card-list" class="doc-list"></ul>
+  <p id="cards-empty-hint" class="empty-hint">가리기 도구로 표시를 남긴 페이지가 여기 카드로 모입니다.</p>
+</section>
+
+<!-- Study view: single flashcard, full size, tap to reveal -->
+<section id="study-view" class="view hidden">
+  <header class="topbar viewer-topbar">
+    <button id="study-close-btn" class="icon-btn" title="닫기" aria-label="닫기">←</button>
+    <span id="study-title" class="doc-title"></span>
+    <span style="width:40px"></span>
+  </header>
+  <div id="study-stage" class="page-stage">
+    <canvas id="study-canvas"></canvas>
+  </div>
+  <div class="toolbar bottom-bar">
+    <button id="study-prev-btn" class="tool-btn" title="이전 카드">‹</button>
+    <span id="study-index-label" class="page-label">1 / 1</span>
+    <button id="study-next-btn" class="tool-btn" title="다음 카드">›</button>
+    <span class="sep grow"></span>
+    <button id="study-reveal-btn" class="tool-btn label-btn active" title="정답 보기">정답 보기</button>
+  </div>
 </section>
 
 <!-- Viewer view: single PDF + annotation layer -->
@@ -34,15 +67,26 @@
   <div class="toolbar">
     <button id="tool-pen" class="tool-btn active" title="펜">✎</button>
     <button id="tool-eraser" class="tool-btn" title="지우개">▱</button>
+    <button id="tool-mask" class="tool-btn" title="가리기 (암기용)">▬</button>
     <span class="sep"></span>
-    <button class="swatch" data-color="#e04c4c" style="background:#e04c4c"></button>
-    <button class="swatch" data-color="#3fae5b" style="background:#3fae5b"></button>
-    <button class="swatch" data-color="#2f6fed" style="background:#2f6fed"></button>
-    <button class="swatch active" data-color="#1c1c1e" style="background:#1c1c1e"></button>
-    <span class="sep"></span>
-    <button id="width-thin" class="width-btn active" data-width="2">·</button>
-    <button id="width-mid" class="width-btn" data-width="4">•</button>
-    <button id="width-thick" class="width-btn" data-width="7">●</button>
+    <div id="pen-controls" class="control-group">
+      <button class="swatch" data-color="#e04c4c" style="background:#e04c4c"></button>
+      <button class="swatch" data-color="#3fae5b" style="background:#3fae5b"></button>
+      <button class="swatch" data-color="#2f6fed" style="background:#2f6fed"></button>
+      <button class="swatch active" data-color="#1c1c1e" style="background:#1c1c1e"></button>
+      <span class="sep"></span>
+      <button id="width-thin" class="width-btn active" data-width="2">·</button>
+      <button id="width-mid" class="width-btn" data-width="4">•</button>
+      <button id="width-thick" class="width-btn" data-width="7">●</button>
+    </div>
+    <div id="mask-controls" class="control-group hidden">
+      <span class="control-label">가릴 그룹</span>
+      <button class="group-chip select active" data-group="1">1</button>
+      <button class="group-chip select" data-group="2">2</button>
+      <button class="group-chip select" data-group="3">3</button>
+      <button class="group-chip select" data-group="4">4</button>
+      <button class="group-chip select" data-group="5">5</button>
+    </div>
     <span class="sep"></span>
     <button id="undo-btn" class="tool-btn" title="실행 취소">↶</button>
     <button id="redo-btn" class="tool-btn" title="다시 실행">↷</button>
@@ -54,6 +98,20 @@
     <button id="prev-page" class="tool-btn" title="이전 페이지">‹</button>
     <span id="page-label" class="page-label">1 / 1</span>
     <button id="next-page" class="tool-btn" title="다음 페이지">›</button>
+  </div>
+
+  <div class="toolbar memorize-bar">
+    <button id="memorize-toggle" class="tool-btn label-btn" title="암기모드 켜기/끄기">암기모드</button>
+    <span class="sep"></span>
+    <span class="control-label">그룹 보기</span>
+    <button class="group-chip visibility active" data-group="1">1</button>
+    <button class="group-chip visibility active" data-group="2">2</button>
+    <button class="group-chip visibility active" data-group="3">3</button>
+    <button class="group-chip visibility active" data-group="4">4</button>
+    <button class="group-chip visibility active" data-group="5">5</button>
+    <span class="sep grow"></span>
+    <button id="reveal-all-btn" class="tool-btn" title="전체 보기">모두 보기</button>
+    <button id="hide-all-btn" class="tool-btn" title="전체 가리기">모두 가리기</button>
   </div>
 
   <div id="page-stage" class="page-stage">

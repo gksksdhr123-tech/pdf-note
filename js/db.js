@@ -1,5 +1,5 @@
 const DB_NAME = "pdf-note";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -11,6 +11,9 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains("strokes")) {
         db.createObjectStore("strokes", { keyPath: "key" });
+      }
+      if (!db.objectStoreNames.contains("masks")) {
+        db.createObjectStore("masks", { keyPath: "key" });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -61,12 +64,14 @@ export async function getAllDocuments() {
 
 export async function deleteDocument(id) {
   const db = await getDB();
-  const t = db.transaction(["documents", "strokes"], "readwrite");
+  const t = db.transaction(["documents", "strokes", "masks"], "readwrite");
   t.objectStore("documents").delete(id);
-  // Stroke keys are `${docId}:${page}`; ":" (0x3A) sorts right after any
-  // digit/letter docId char, so this range covers exactly this doc's pages.
+  // Stroke/mask keys are `${docId}:${page}`; ":" (0x3A) sorts right after
+  // any digit/letter docId char, so this range covers exactly this doc's
+  // pages.
   const range = IDBKeyRange.bound(`${id}:`, `${id}:￿`);
   t.objectStore("strokes").delete(range);
+  t.objectStore("masks").delete(range);
   return new Promise((resolve, reject) => {
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
@@ -84,5 +89,39 @@ export async function saveStrokes(docId, page, strokes) {
   const store = await tx("strokes", "readwrite");
   return reqToPromise(
     store.put({ key: `${docId}:${page}`, docId, page, strokes })
+  );
+}
+
+// All (docId, page) pairs that have at least one memorization mask, with
+// the owning document's name — used to build the home-screen flashcard
+// list without opening every document.
+export async function getAllMaskedPages() {
+  const maskStore = await tx("masks", "readonly");
+  const allMasks = await reqToPromise(maskStore.getAll());
+  const docStore = await tx("documents", "readonly");
+  const allDocs = await reqToPromise(docStore.getAll());
+  const docsById = new Map(allDocs.map((d) => [d.id, d]));
+
+  return allMasks
+    .filter((rec) => rec.masks && rec.masks.length > 0 && docsById.has(rec.docId))
+    .map((rec) => ({
+      docId: rec.docId,
+      docName: docsById.get(rec.docId).name,
+      page: rec.page,
+      count: rec.masks.length,
+    }))
+    .sort((a, b) => a.docName.localeCompare(b.docName) || a.page - b.page);
+}
+
+export async function getMasks(docId, page) {
+  const store = await tx("masks", "readonly");
+  const rec = await reqToPromise(store.get(`${docId}:${page}`));
+  return rec ? rec.masks : [];
+}
+
+export async function saveMasks(docId, page, masks) {
+  const store = await tx("masks", "readwrite");
+  return reqToPromise(
+    store.put({ key: `${docId}:${page}`, docId, page, masks })
   );
 }

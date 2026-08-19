@@ -6,18 +6,26 @@ import {
   deleteDocument,
   getStrokes,
   saveStrokes,
+  getMasks,
+  saveMasks,
+  getAllMaskedPages,
 } from "./db.js";
 import { loadPdf, getPage, getUnscaledSize, renderPage } from "./pdf-engine.js";
 import { AnnotationLayer } from "./annotate.js";
 import { exportAnnotatedPdf } from "./export.js";
 
 const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const homeView = $("#home-view");
 const viewerView = $("#viewer-view");
+const cardsView = $("#cards-view");
+const studyView = $("#study-view");
+
 const docList = $("#doc-list");
 const emptyHint = $("#empty-hint");
 const addBtn = $("#add-btn");
+const cardsBtn = $("#cards-btn");
 const fileInput = $("#file-input");
 const backBtn = $("#back-btn");
 const docTitle = $("#doc-title");
@@ -32,12 +40,31 @@ const toast = $("#toast");
 
 const toolPen = $("#tool-pen");
 const toolEraser = $("#tool-eraser");
+const toolMask = $("#tool-mask");
+const penControls = $("#pen-controls");
+const maskControls = $("#mask-controls");
 const undoBtn = $("#undo-btn");
 const redoBtn = $("#redo-btn");
 const prevPageBtn = $("#prev-page");
 const nextPageBtn = $("#next-page");
 const zoomInBtn = $("#zoom-in");
 const zoomOutBtn = $("#zoom-out");
+const memorizeToggle = $("#memorize-toggle");
+const revealAllBtn = $("#reveal-all-btn");
+const hideAllBtn = $("#hide-all-btn");
+
+const cardsBackBtn = $("#cards-back-btn");
+const cardListEl = $("#card-list");
+const cardsEmptyHint = $("#cards-empty-hint");
+const studyCloseBtn = $("#study-close-btn");
+const studyTitle = $("#study-title");
+const studyStage = $("#study-stage");
+const studyCanvas = $("#study-canvas");
+const studyPrevBtn = $("#study-prev-btn");
+const studyNextBtn = $("#study-next-btn");
+const studyIndexLabel = $("#study-index-label");
+const studyRevealBtn = $("#study-reveal-btn");
+const studyBaseCanvas = document.createElement("canvas"); // offscreen: pristine PDF render
 
 const state = {
   docRecord: null,
@@ -48,6 +75,11 @@ const state = {
   baseScale: 1,
   zoom: 1,
   history: new Map(), // page -> { undo: [], redo: [] }
+  cardPages: [],
+  studyIndex: 0,
+  studyRevealed: false,
+  studyDraw: null,
+  studyPdfCache: new Map(), // docId -> pdf.js document proxy
 };
 
 let ink = null;
@@ -57,6 +89,13 @@ function showToast(msg) {
   toast.classList.remove("hidden");
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => toast.classList.add("hidden"), 1800);
+}
+
+function hideAllViews() {
+  homeView.classList.add("hidden");
+  viewerView.classList.add("hidden");
+  cardsView.classList.add("hidden");
+  studyView.classList.add("hidden");
 }
 
 // ---------- Home view ----------
@@ -141,13 +180,18 @@ async function openDocument(id) {
   state.totalPages = state.pdfDoc.numPages;
 
   docTitle.textContent = doc.name;
-  homeView.classList.add("hidden");
+  hideAllViews();
   viewerView.classList.remove("hidden");
 
   if (!ink) {
     ink = new AnnotationLayer(inkCanvas, { onChange: onInkChange, scrollContainer: pageStage });
     window.__ink = ink; // debug handle
   }
+  ink.resetGroups();
+  selectTool("pen");
+  syncGroupSelectChips();
+  syncVisibilityChips();
+  memorizeToggle.classList.remove("active");
 
   await renderCurrentPage(true);
 }
@@ -164,8 +208,12 @@ async function renderCurrentPage(fitToWidth) {
   const viewport = await renderPage(state.page, pdfCanvas, scale);
   ink.setViewport(viewport);
 
-  const strokes = await getStrokes(state.docRecord.id, state.currentPage);
+  const [strokes, masks] = await Promise.all([
+    getStrokes(state.docRecord.id, state.currentPage),
+    getMasks(state.docRecord.id, state.currentPage),
+  ]);
   ink.setStrokes(strokes);
+  ink.setMasks(masks);
 
   pageWrap.style.width = pdfCanvas.style.width;
   pageWrap.style.height = pdfCanvas.style.height;
@@ -189,8 +237,12 @@ function updateUndoRedoButtons() {
   redoBtn.disabled = h.redo.length === 0;
 }
 
-async function persistCurrentStrokes() {
-  await saveStrokes(state.docRecord.id, state.currentPage, ink.getStrokes());
+async function persistAfterAction(action) {
+  if (action.kind === "mask") {
+    await saveMasks(state.docRecord.id, state.currentPage, ink.getMasks());
+  } else {
+    await saveStrokes(state.docRecord.id, state.currentPage, ink.getStrokes());
+  }
 }
 
 function onInkChange(action) {
@@ -198,47 +250,77 @@ function onInkChange(action) {
   h.undo.push(action);
   h.redo.length = 0;
   updateUndoRedoButtons();
-  persistCurrentStrokes();
+  persistAfterAction(action);
+}
+
+function applyUndo(action) {
+  if (action.kind === "mask") {
+    const masks = ink.getMasks();
+    if (action.type === "add") {
+      const idx = masks.lastIndexOf(action.mask);
+      if (idx !== -1) masks.splice(idx, 1);
+    } else if (action.type === "erase") {
+      masks.push(...action.masks);
+    }
+  } else {
+    const strokes = ink.getStrokes();
+    if (action.type === "add") {
+      const idx = strokes.lastIndexOf(action.stroke);
+      if (idx !== -1) strokes.splice(idx, 1);
+    } else if (action.type === "erase") {
+      strokes.push(...action.strokes);
+    }
+  }
+  ink.redraw();
+}
+
+function applyRedo(action) {
+  if (action.kind === "mask") {
+    const masks = ink.getMasks();
+    if (action.type === "add") {
+      masks.push(action.mask);
+    } else if (action.type === "erase") {
+      for (const m of action.masks) {
+        const idx = masks.indexOf(m);
+        if (idx !== -1) masks.splice(idx, 1);
+      }
+    }
+  } else {
+    const strokes = ink.getStrokes();
+    if (action.type === "add") {
+      strokes.push(action.stroke);
+    } else if (action.type === "erase") {
+      for (const s of action.strokes) {
+        const idx = strokes.indexOf(s);
+        if (idx !== -1) strokes.splice(idx, 1);
+      }
+    }
+  }
+  ink.redraw();
 }
 
 undoBtn.addEventListener("click", () => {
   const h = getHistory();
   const action = h.undo.pop();
   if (!action) return;
-  const strokes = ink.getStrokes();
-  if (action.type === "add") {
-    const idx = strokes.lastIndexOf(action.stroke);
-    if (idx !== -1) strokes.splice(idx, 1);
-  } else if (action.type === "erase") {
-    strokes.push(...action.strokes);
-  }
-  ink.redraw();
+  applyUndo(action);
   h.redo.push(action);
   updateUndoRedoButtons();
-  persistCurrentStrokes();
+  persistAfterAction(action);
 });
 
 redoBtn.addEventListener("click", () => {
   const h = getHistory();
   const action = h.redo.pop();
   if (!action) return;
-  const strokes = ink.getStrokes();
-  if (action.type === "add") {
-    strokes.push(action.stroke);
-  } else if (action.type === "erase") {
-    for (const s of action.strokes) {
-      const idx = strokes.indexOf(s);
-      if (idx !== -1) strokes.splice(idx, 1);
-    }
-  }
-  ink.redraw();
+  applyRedo(action);
   h.undo.push(action);
   updateUndoRedoButtons();
-  persistCurrentStrokes();
+  persistAfterAction(action);
 });
 
 backBtn.addEventListener("click", () => {
-  viewerView.classList.add("hidden");
+  hideAllViews();
   homeView.classList.remove("hidden");
   renderHome();
 });
@@ -267,42 +349,96 @@ zoomOutBtn.addEventListener("click", async () => {
   await renderCurrentPage(false);
 });
 
-toolPen.addEventListener("click", () => {
-  ink.setTool("pen");
-  toolPen.classList.add("active");
-  toolEraser.classList.remove("active");
-});
+// ---------- Tools: pen / eraser / mask ----------
 
-toolEraser.addEventListener("click", () => {
-  ink.setTool("eraser");
-  toolEraser.classList.add("active");
-  toolPen.classList.remove("active");
-});
+const toolButtons = { pen: toolPen, eraser: toolEraser, mask: toolMask };
 
-document.querySelectorAll(".swatch").forEach((btn) => {
+function selectTool(tool) {
+  ink.setTool(tool);
+  Object.entries(toolButtons).forEach(([t, btn]) => btn.classList.toggle("active", t === tool));
+  penControls.classList.toggle("hidden", tool !== "pen");
+  maskControls.classList.toggle("hidden", tool !== "mask");
+}
+
+toolPen.addEventListener("click", () => selectTool("pen"));
+toolEraser.addEventListener("click", () => selectTool("eraser"));
+toolMask.addEventListener("click", () => selectTool("mask"));
+
+$$(".swatch").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".swatch").forEach((b) => b.classList.remove("active"));
+    $$(".swatch").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     ink.setColor(btn.dataset.color);
   });
 });
 
-document.querySelectorAll(".width-btn").forEach((btn) => {
+$$(".width-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".width-btn").forEach((b) => b.classList.remove("active"));
+    $$(".width-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     ink.setWidth(Number(btn.dataset.width));
   });
 });
 
+// ---------- Memorize mode ----------
+
+function syncGroupSelectChips() {
+  $$(".group-chip.select").forEach((btn) => {
+    btn.classList.toggle("active", Number(btn.dataset.group) === ink.currentGroup);
+  });
+}
+
+function syncVisibilityChips() {
+  $$(".group-chip.visibility").forEach((btn) => {
+    btn.classList.toggle("active", ink.isGroupActive(Number(btn.dataset.group)));
+  });
+}
+
+$$(".group-chip.select").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    ink.setCurrentGroup(Number(btn.dataset.group));
+    syncGroupSelectChips();
+  });
+});
+
+$$(".group-chip.visibility").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const g = Number(btn.dataset.group);
+    ink.setGroupActive(g, !ink.isGroupActive(g));
+    syncVisibilityChips();
+  });
+});
+
+memorizeToggle.addEventListener("click", () => {
+  const on = !memorizeToggle.classList.contains("active");
+  memorizeToggle.classList.toggle("active", on);
+  ink.setMemorizeOn(on);
+});
+
+revealAllBtn.addEventListener("click", () => {
+  ink.setAllGroupsActive(false);
+  syncVisibilityChips();
+});
+
+hideAllBtn.addEventListener("click", () => {
+  ink.setAllGroupsActive(true);
+  syncVisibilityChips();
+});
+
+// ---------- Export ----------
+
 exportBtn.addEventListener("click", async () => {
   showToast("내보내는 중...");
   try {
     const strokesByPage = {};
+    const masksByPage = {};
     for (let p = 1; p <= state.totalPages; p++) {
-      strokesByPage[p] = p === state.currentPage ? ink.getStrokes() : await getStrokes(state.docRecord.id, p);
+      const strokes = p === state.currentPage ? ink.getStrokes() : await getStrokes(state.docRecord.id, p);
+      const masks = p === state.currentPage ? ink.getMasks() : await getMasks(state.docRecord.id, p);
+      strokesByPage[p] = strokes;
+      masksByPage[p] = masks.filter((m) => ink.isExportOpaque(m.group));
     }
-    await exportAnnotatedPdf(state.docRecord, strokesByPage);
+    await exportAnnotatedPdf(state.docRecord, strokesByPage, masksByPage);
     showToast("저장 완료");
   } catch (err) {
     console.error(err);
@@ -312,7 +448,151 @@ exportBtn.addEventListener("click", async () => {
 
 window.addEventListener("resize", () => {
   if (!viewerView.classList.contains("hidden")) renderCurrentPage(false);
+  if (!studyView.classList.contains("hidden")) renderStudyCard();
 });
+
+// ---------- Flashcards (cards view + study view) ----------
+
+cardsBtn.addEventListener("click", renderCardsView);
+cardsBackBtn.addEventListener("click", () => {
+  hideAllViews();
+  homeView.classList.remove("hidden");
+});
+
+async function renderCardsView() {
+  hideAllViews();
+  cardsView.classList.remove("hidden");
+  const pages = await getAllMaskedPages();
+  state.cardPages = pages;
+  cardListEl.innerHTML = "";
+  cardsEmptyHint.classList.toggle("hidden", pages.length > 0);
+  pages.forEach((entry, idx) => {
+    const li = document.createElement("li");
+    li.className = "doc-item";
+    li.innerHTML = `
+      <div class="doc-icon">${entry.page}p</div>
+      <div class="doc-info">
+        <div class="doc-name"></div>
+        <div class="doc-meta"></div>
+      </div>
+    `;
+    li.querySelector(".doc-name").textContent = entry.docName;
+    li.querySelector(".doc-meta").textContent = `${entry.page}페이지 · 가림 ${entry.count}개`;
+    li.addEventListener("click", () => openStudy(idx));
+    cardListEl.appendChild(li);
+  });
+}
+
+async function openStudy(idx) {
+  state.studyIndex = idx;
+  hideAllViews();
+  studyView.classList.remove("hidden");
+  await renderStudyCard();
+}
+
+studyCloseBtn.addEventListener("click", () => {
+  hideAllViews();
+  cardsView.classList.remove("hidden");
+});
+
+studyPrevBtn.addEventListener("click", async () => {
+  if (state.studyIndex > 0) {
+    state.studyIndex--;
+    await renderStudyCard();
+  }
+});
+
+studyNextBtn.addEventListener("click", async () => {
+  if (state.studyIndex < state.cardPages.length - 1) {
+    state.studyIndex++;
+    await renderStudyCard();
+  }
+});
+
+function setStudyRevealed(revealed) {
+  state.studyRevealed = revealed;
+  studyRevealBtn.classList.toggle("active", !revealed);
+  studyRevealBtn.textContent = revealed ? "다시 가리기" : "정답 보기";
+  drawStudyOverlay();
+}
+
+studyRevealBtn.addEventListener("click", () => setStudyRevealed(!state.studyRevealed));
+studyCanvas.addEventListener("click", () => setStudyRevealed(!state.studyRevealed));
+
+async function renderStudyCard() {
+  const entry = state.cardPages[state.studyIndex];
+  if (!entry) return;
+  studyTitle.textContent = `${entry.docName} · ${entry.page}p`;
+  studyIndexLabel.textContent = `${state.studyIndex + 1} / ${state.cardPages.length}`;
+  studyPrevBtn.disabled = state.studyIndex <= 0;
+  studyNextBtn.disabled = state.studyIndex >= state.cardPages.length - 1;
+
+  let pdfDoc = state.studyPdfCache.get(entry.docId);
+  if (!pdfDoc) {
+    const doc = await getDocument(entry.docId);
+    if (!doc) return;
+    const buf = await doc.blob.arrayBuffer();
+    pdfDoc = await loadPdf(buf);
+    state.studyPdfCache.set(entry.docId, pdfDoc);
+  }
+
+  const page = await getPage(pdfDoc, entry.page);
+  const unscaled = getUnscaledSize(page);
+  const available = studyStage.clientWidth - 24;
+  const scale = Math.min(2.5, available / unscaled.pageWidth);
+  // Render into an offscreen canvas so drawStudyOverlay() can always start
+  // from pristine pixels (drawing directly on the visible canvas would make
+  // a mask permanent — there'd be no way to "reveal" it again).
+  const viewport = await renderPage(page, studyBaseCanvas, scale);
+  studyCanvas.width = studyBaseCanvas.width;
+  studyCanvas.height = studyBaseCanvas.height;
+  studyCanvas.style.width = studyBaseCanvas.style.width;
+  studyCanvas.style.height = studyBaseCanvas.style.height;
+
+  const [strokes, masks] = await Promise.all([
+    getStrokes(entry.docId, entry.page),
+    getMasks(entry.docId, entry.page),
+  ]);
+  state.studyDraw = { viewport, strokes, masks };
+  window.__studyDraw = state.studyDraw; // debug handle
+  setStudyRevealed(false);
+}
+
+function drawStudyOverlay() {
+  if (!state.studyDraw) return;
+  const { viewport, strokes, masks } = state.studyDraw;
+  const ctx = studyCanvas.getContext("2d");
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, studyCanvas.width, studyCanvas.height);
+  ctx.drawImage(studyBaseCanvas, 0, 0);
+
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
+  for (const stroke of strokes) {
+    ctx.strokeStyle = stroke.color;
+    for (let i = 1; i < stroke.points.length; i++) {
+      const [ax, ay] = viewport.convertToViewportPoint(stroke.points[i - 1].x, stroke.points[i - 1].y);
+      const [bx, by] = viewport.convertToViewportPoint(stroke.points[i].x, stroke.points[i].y);
+      ctx.lineWidth = stroke.width * viewport.scale;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+    }
+  }
+
+  if (!state.studyRevealed) {
+    for (const mask of masks) {
+      const [x0, y0] = viewport.convertToViewportPoint(mask.x, mask.y);
+      const [x1, y1] = viewport.convertToViewportPoint(mask.x + mask.w, mask.y + mask.h);
+      ctx.fillStyle = mask.color;
+      ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    }
+  }
+}
 
 // ---------- Boot ----------
 
