@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>PDF Note</title>
+<meta name="theme-color" content="#1c1c1e" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icons/icon.svg" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- Home view: list of saved PDFs -->
+<section id="home-view" class="view">
+  <header class="topbar">
+    <h1>PDF Note</h1>
+    <button id="add-btn" class="icon-btn" title="PDF 추가" aria-label="PDF 추가">+</button>
+  </header>
+  <ul id="doc-list" class="doc-list"></ul>
+  <p id="empty-hint" class="empty-hint">오른쪽 위 + 버튼으로 PDF를 불러오세요.</p>
+  <input id="file-input" type="file" accept="application/pdf" hidden />
+</section>
+
+<!-- Viewer view: single PDF + annotation layer -->
+<section id="viewer-view" class="view hidden">
+  <header class="topbar viewer-topbar">
+    <button id="back-btn" class="icon-btn" title="뒤로" aria-label="뒤로">←</button>
+    <span id="doc-title" class="doc-title"></span>
+    <button id="export-btn" class="icon-btn" title="내보내기" aria-label="내보내기">⬇</button>
+  </header>
+
+  <div id="page-stage" class="page-stage">
+    <div id="page-wrap" class="page-wrap">
+      <canvas id="pdf-canvas"></canvas>
+      <canvas id="ink-canvas"></canvas>
+    </div>
+  </div>
+
+  <footer class="toolbar">
+    <button id="tool-pen" class="tool-btn active" title="펜">✎</button>
+    <button id="tool-eraser" class="tool-btn" title="지우개">▱</button>
+    <span class="sep"></span>
+    <button class="swatch" data-color="#e04c4c" style="background:#e04c4c"></button>
+    <button class="swatch" data-color="#3fae5b" style="background:#3fae5b"></button>
+    <button class="swatch" data-color="#2f6fed" style="background:#2f6fed"></button>
+    <button class="swatch active" data-color="#1c1c1e" style="background:#1c1c1e"></button>
+    <span class="sep"></span>
+    <button id="width-thin" class="width-btn active" data-width="2">·</button>
+    <button id="width-mid" class="width-btn" data-width="4">•</button>
+    <button id="width-thick" class="width-btn" data-width="7">●</button>
+    <span class="sep"></span>
+    <button id="undo-btn" class="tool-btn" title="실행 취소">↶</button>
+    <button id="redo-btn" class="tool-btn" title="다시 실행">↷</button>
+    <span class="sep grow"></span>
+    <button id="zoom-out" class="tool-btn" title="축소">−</button>
+    <span id="zoom-label" class="zoom-label">100%</span>
+    <button id="zoom-in" class="tool-btn" title="확대">+</button>
+    <span class="sep"></span>
+    <button id="prev-page" class="tool-btn" title="이전 페이지">‹</button>
+    <span id="page-label" class="page-label">1 / 1</span>
+    <button id="next-page" class="tool-btn" title="다음 페이지">›</button>
+  </footer>
+</section>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="vendor/pdf-lib.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
