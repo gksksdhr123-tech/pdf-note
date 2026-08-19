@@ -31,7 +31,6 @@ const viewerView = $("#viewer-view");
 const cardsView = $("#cards-view");
 const studyView = $("#study-view");
 const settingsView = $("#settings-view");
-const pagesView = $("#pages-view");
 
 const docList = $("#doc-list");
 const emptyHint = $("#empty-hint");
@@ -50,11 +49,18 @@ const zoomLabel = $("#zoom-label");
 const toast = $("#toast");
 
 const toolPen = $("#tool-pen");
+const toolPenStraight = $("#tool-pen-straight");
+const toolHighlighter = $("#tool-highlighter");
+const toolHighlighterStraight = $("#tool-highlighter-straight");
 const toolEraser = $("#tool-eraser");
 const toolMask = $("#tool-mask");
 const toolPan = $("#tool-pan");
 const penControls = $("#pen-controls");
+const penSwatchesNormal = $("#pen-swatches-normal");
+const penSwatchesHighlight = $("#pen-swatches-highlight");
 const maskControls = $("#mask-controls");
+const maskModeDraw = $("#mask-mode-draw");
+const maskModeErase = $("#mask-mode-erase");
 const undoBtn = $("#undo-btn");
 const redoBtn = $("#redo-btn");
 const prevPageBtn = $("#prev-page");
@@ -88,8 +94,9 @@ const clearFolderBtn = $("#clear-folder-btn");
 const settingsUnsupportedHint = $("#settings-unsupported-hint");
 
 const pagesViewBtn = $("#pages-view-btn");
-const pagesBackBtn = $("#pages-back-btn");
-const pagesGrid = $("#pages-grid");
+const pagesSidebar = $("#pages-sidebar");
+const pagesSidebarList = $("#pages-sidebar-list");
+const addPageBtn = $("#add-page-btn");
 const insertModal = $("#insert-modal");
 const insertCancelBtn = $("#insert-cancel-btn");
 const imageInput = $("#image-input");
@@ -116,7 +123,6 @@ const state = {
 
 let ink = null;
 let autoAdvance = localStorage.getItem("pdf-note:auto-advance") !== "off"; // default on
-let insertAfterIndex = null; // position in state.order to insert after (-1 = before first)
 
 // File System Access API lets us keep a lightweight, reusable reference to
 // a file on disk instead of copying the whole PDF into IndexedDB — avoids
@@ -141,7 +147,6 @@ function hideAllViews() {
   cardsView.classList.add("hidden");
   studyView.classList.add("hidden");
   settingsView.classList.add("hidden");
-  pagesView.classList.add("hidden");
 }
 
 // ---------- Notes folder backup ----------
@@ -412,6 +417,7 @@ async function openDocument(id, preFetchedFile) {
   docTitle.textContent = doc.name;
   hideAllViews();
   viewerView.classList.remove("hidden");
+  pagesSidebar.classList.add("hidden");
 
   if (!ink) {
     ink = new AnnotationLayer(inkCanvas, {
@@ -519,6 +525,7 @@ async function renderCurrentPageImpl(fitToWidth) {
   prevPageBtn.disabled = state.currentPage <= 1;
   nextPageBtn.disabled = state.currentPage >= state.totalPages;
   updateUndoRedoButtons();
+  updateSidebarActiveHighlight();
 }
 
 function getHistory() {
@@ -647,21 +654,56 @@ zoomOutBtn.addEventListener("click", async () => {
   await renderCurrentPage(false);
 });
 
-// ---------- Tools: pen / eraser / mask / pan ----------
+// ---------- Tools: pen family / eraser / mask (draw+erase) / pan ----------
 
-const toolButtons = { pen: toolPen, eraser: toolEraser, mask: toolMask, pan: toolPan };
+const PEN_FAMILY = new Set(["pen", "pen-straight", "highlighter", "highlighter-straight"]);
+const MASK_FAMILY = new Set(["mask", "mask-erase"]);
+
+const toolButtons = {
+  pen: toolPen,
+  "pen-straight": toolPenStraight,
+  highlighter: toolHighlighter,
+  "highlighter-straight": toolHighlighterStraight,
+  eraser: toolEraser,
+  mask: toolMask, // also covers "mask-erase", handled below
+  pan: toolPan,
+};
 
 function selectTool(tool) {
   ink.setTool(tool);
-  Object.entries(toolButtons).forEach(([t, btn]) => btn.classList.toggle("active", t === tool));
-  penControls.classList.toggle("hidden", tool !== "pen");
-  maskControls.classList.toggle("hidden", tool !== "mask");
+  const mainToolKey = MASK_FAMILY.has(tool) ? "mask" : tool;
+  Object.entries(toolButtons).forEach(([t, btn]) => btn.classList.toggle("active", t === mainToolKey));
+  penControls.classList.toggle("hidden", !PEN_FAMILY.has(tool));
+  maskControls.classList.toggle("hidden", !MASK_FAMILY.has(tool));
+  if (PEN_FAMILY.has(tool)) syncPenPaletteForTool(tool);
+  if (MASK_FAMILY.has(tool)) {
+    maskModeDraw.classList.toggle("active", tool === "mask");
+    maskModeErase.classList.toggle("active", tool === "mask-erase");
+  }
+}
+
+function syncPenPaletteForTool(tool) {
+  const isHighlight = tool === "highlighter" || tool === "highlighter-straight";
+  penSwatchesNormal.classList.toggle("hidden", isHighlight);
+  penSwatchesHighlight.classList.toggle("hidden", !isHighlight);
+  const activeGroup = isHighlight ? penSwatchesHighlight : penSwatchesNormal;
+  let activeSwatch = activeGroup.querySelector(".swatch.active");
+  if (!activeSwatch) {
+    activeSwatch = activeGroup.querySelector(".swatch");
+    activeSwatch.classList.add("active");
+  }
+  ink.setColor(activeSwatch.dataset.color);
 }
 
 toolPen.addEventListener("click", () => selectTool("pen"));
+toolPenStraight.addEventListener("click", () => selectTool("pen-straight"));
+toolHighlighter.addEventListener("click", () => selectTool("highlighter"));
+toolHighlighterStraight.addEventListener("click", () => selectTool("highlighter-straight"));
 toolEraser.addEventListener("click", () => selectTool("eraser"));
 toolMask.addEventListener("click", () => selectTool("mask"));
 toolPan.addEventListener("click", () => selectTool("pan"));
+maskModeDraw.addEventListener("click", () => selectTool("mask"));
+maskModeErase.addEventListener("click", () => selectTool("mask-erase"));
 
 autoAdvanceToggle.classList.toggle("active", autoAdvance);
 autoAdvanceToggle.addEventListener("click", () => {
@@ -673,7 +715,10 @@ autoAdvanceToggle.addEventListener("click", () => {
 
 $$(".swatch").forEach((btn) => {
   btn.addEventListener("click", () => {
-    $$(".swatch").forEach((b) => b.classList.remove("active"));
+    // Scope "clear active" to this swatch's own group (normal vs
+    // highlighter palette) so switching pen families doesn't forget the
+    // other palette's last-picked color.
+    Array.from(btn.parentElement.querySelectorAll(".swatch")).forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     ink.setColor(btn.dataset.color);
   });
@@ -758,35 +803,35 @@ window.addEventListener("resize", () => {
   if (!studyView.classList.contains("hidden")) renderStudyCard();
 });
 
-// ---------- Pages view: thumbnails, jump, insert/delete pages ----------
+// ---------- Pages sidebar: thumbnails, jump, insert/delete pages ----------
+//
+// A left-side thumbnail rail inside the viewer (toggled open/closed),
+// the way ordinary PDF readers show their page list — not a separate
+// full-screen view. "페이지 추가" always inserts right after whichever
+// page is currently open.
 
-pagesViewBtn.addEventListener("click", renderPagesView);
-pagesBackBtn.addEventListener("click", async () => {
-  hideAllViews();
-  viewerView.classList.remove("hidden");
-  // Re-render in case a page was inserted/deleted while in this view —
-  // state.order and/or state.currentPage may have changed underneath us.
-  await renderCurrentPage(false);
+pagesViewBtn.addEventListener("click", () => {
+  const opening = pagesSidebar.classList.contains("hidden");
+  pagesSidebar.classList.toggle("hidden", !opening);
+  if (opening) renderPagesSidebar();
 });
 
-async function renderPagesView() {
-  hideAllViews();
-  pagesView.classList.remove("hidden");
-  pagesGrid.innerHTML = "";
-  pagesGrid.appendChild(makeInsertTile(-1));
-
+async function renderPagesSidebar() {
+  pagesSidebarList.innerHTML = "";
   for (let i = 0; i < state.order.length; i++) {
     const entry = state.order[i];
-    const cell = document.createElement("div");
-    cell.className = "page-cell";
+    const item = document.createElement("div");
+    item.className = "sidebar-page-item";
+    item.dataset.pos = String(i + 1);
+    if (i + 1 === state.currentPage) item.classList.add("active");
 
     const canvas = document.createElement("canvas");
-    cell.appendChild(canvas);
+    item.appendChild(canvas);
 
     const num = document.createElement("div");
     num.className = "page-num";
     num.textContent = String(i + 1);
-    cell.appendChild(num);
+    item.appendChild(num);
 
     if (entry.kind !== "original") {
       const del = document.createElement("button");
@@ -797,46 +842,40 @@ async function renderPagesView() {
         e.stopPropagation();
         deleteInsertedPage(i);
       });
-      cell.appendChild(del);
+      item.appendChild(del);
     }
 
     const pos = i + 1;
-    cell.addEventListener("click", () => jumpToPage(pos));
-    pagesGrid.appendChild(cell);
-    pagesGrid.appendChild(makeInsertTile(i));
+    item.addEventListener("click", () => jumpToPage(pos));
+    pagesSidebarList.appendChild(item);
 
     const width = await entryUnscaledWidth(state.pdfDoc, entry, state.syntheticSize);
-    const scale = 130 / width;
+    const scale = 120 / width;
     await renderEntry(state.pdfDoc, entry, canvas, scale, state.syntheticSize);
     // renderEntry sets an inline canvas.style.width/height (needed for the
-    // full-size viewer); clear it here so the .page-cell canvas CSS rule
-    // (width:100%) can stretch the thumbnail to fill its actual grid cell
-    // instead of sitting at its fixed intrinsic size.
+    // full-size viewer); clear it here so the CSS rule (width:100%) can
+    // stretch the thumbnail to fill the sidebar instead of sitting at its
+    // fixed intrinsic size.
     canvas.style.width = "";
     canvas.style.height = "";
   }
 }
 
-function makeInsertTile(afterIndex) {
-  const btn = document.createElement("button");
-  btn.className = "insert-tile";
-  btn.textContent = "+";
-  btn.title = "여기에 페이지 추가";
-  btn.addEventListener("click", () => openInsertModal(afterIndex));
-  return btn;
+function updateSidebarActiveHighlight() {
+  if (pagesSidebar.classList.contains("hidden")) return;
+  Array.from(pagesSidebarList.children).forEach((item) => {
+    item.classList.toggle("active", Number(item.dataset.pos) === state.currentPage);
+  });
 }
 
 function jumpToPage(pos) {
   state.currentPage = pos;
-  hideAllViews();
-  viewerView.classList.remove("hidden");
   renderCurrentPage(false);
 }
 
-function openInsertModal(afterIndex) {
-  insertAfterIndex = afterIndex;
+addPageBtn.addEventListener("click", () => {
   insertModal.classList.remove("hidden");
-}
+});
 
 insertCancelBtn.addEventListener("click", () => insertModal.classList.add("hidden"));
 insertModal.addEventListener("click", (e) => {
@@ -879,11 +918,14 @@ async function normalizeToPng(file) {
 async function insertPage(kind, imageBlob) {
   const entry = { id: newInsertedPageId(), kind, size: { ...state.syntheticSize } };
   if (imageBlob) entry.imageBlob = imageBlob;
-  state.order.splice(insertAfterIndex + 1, 0, entry);
+  const insertAt = state.currentPage; // right after the page currently open
+  state.order.splice(insertAt, 0, entry);
   state.totalPages = state.order.length;
   await savePagePlan(state.docRecord.id, state.order);
   showToast("페이지를 추가했어요");
-  await renderPagesView();
+  state.currentPage = insertAt + 1;
+  await renderCurrentPage(false);
+  if (!pagesSidebar.classList.contains("hidden")) await renderPagesSidebar();
 }
 
 async function deleteInsertedPage(index) {
@@ -894,9 +936,11 @@ async function deleteInsertedPage(index) {
   await savePagePlan(state.docRecord.id, state.order);
   await saveStrokes(state.docRecord.id, entry.id, []);
   await saveMasks(state.docRecord.id, entry.id, []);
+  if (index < state.currentPage - 1) state.currentPage--;
   if (state.currentPage > state.totalPages) state.currentPage = state.totalPages;
   showToast("페이지를 삭제했어요");
-  await renderPagesView();
+  await renderCurrentPage(false);
+  await renderPagesSidebar();
 }
 
 // ---------- Flashcards (cards view + study view) ----------
@@ -1042,6 +1086,7 @@ function drawStudyOverlay() {
 
   for (const stroke of strokes) {
     ctx.strokeStyle = stroke.color;
+    ctx.globalAlpha = stroke.highlight ? 0.4 : 1;
     for (let i = 1; i < stroke.points.length; i++) {
       const [ax, ay] = viewport.convertToViewportPoint(stroke.points[i - 1].x, stroke.points[i - 1].y);
       const [bx, by] = viewport.convertToViewportPoint(stroke.points[i].x, stroke.points[i].y);
@@ -1051,6 +1096,7 @@ function drawStudyOverlay() {
       ctx.lineTo(bx, by);
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
   }
 
   if (!state.studyRevealed) {

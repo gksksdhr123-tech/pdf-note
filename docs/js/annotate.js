@@ -9,7 +9,10 @@
 
 const ERASE_RADIUS_CSS_PX = 14;
 const MIN_MASK_PDF_SIZE = 3;
+const MIN_STRAIGHT_LINE_PDF_LENGTH = 1;
 const EDGE_DRAG_THRESHOLD_CSS_PX = 40;
+const HIGHLIGHT_ALPHA = 0.4;
+const DRAW_TOOLS = new Set(["pen", "pen-straight", "highlighter", "highlighter-straight"]);
 
 export const GROUP_COLORS = {
   1: "#1c1c1e",
@@ -241,12 +244,22 @@ export class AnnotationLayer {
     this._trySetCapture(e.pointerId);
     this._activeTool = this._effectiveTool(e);
     const pt = this._eventToPagePoint(e);
-    if (this._activeTool === "pen") {
-      this._active = { color: this.color, width: this.width, points: [pt] };
+    if (DRAW_TOOLS.has(this._activeTool)) {
+      const highlight = this._activeTool.startsWith("highlighter");
+      const straight = this._activeTool.endsWith("straight");
+      this._active = {
+        color: this.color,
+        width: this.width,
+        highlight,
+        straight,
+        points: straight ? [pt, pt] : [pt],
+      };
     } else if (this._activeTool === "eraser") {
       this._erasingStrokes = new Set();
+      this._eraseStrokesAt(pt);
+    } else if (this._activeTool === "mask-erase") {
       this._erasingMasks = new Set();
-      this._eraseAt(pt);
+      this._eraseMasksAt(pt);
     } else if (this._activeTool === "mask") {
       this._activeMask = {
         group: this.currentGroup,
@@ -285,15 +298,23 @@ export class AnnotationLayer {
       return;
     }
     e.preventDefault();
-    if (this._activeTool === "pen" && this._active) {
+    if (DRAW_TOOLS.has(this._activeTool) && this._active) {
       const pt = this._eventToPagePoint(e);
-      const pts = this._active.points;
-      const prev = pts[pts.length - 1];
-      pts.push(pt);
-      this._drawSegment(prev, pt, this._active.color, this._active.width);
-    } else if (this._activeTool === "eraser" && (this._erasingStrokes || this._erasingMasks)) {
-      const pt = this._eventToPagePoint(e);
-      this._eraseAt(pt);
+      if (this._active.straight) {
+        // Replace (not append) the end point each move, then redraw fully —
+        // a straight-line stroke is only ever its start and current end.
+        this._active.points[1] = pt;
+        this._redraw();
+      } else {
+        const pts = this._active.points;
+        const prev = pts[pts.length - 1];
+        pts.push(pt);
+        this._drawSegment(prev, pt, this._active.color, this._active.width, this._active.highlight);
+      }
+    } else if (this._activeTool === "eraser" && this._erasingStrokes) {
+      this._eraseStrokesAt(this._eventToPagePoint(e));
+    } else if (this._activeTool === "mask-erase" && this._erasingMasks) {
+      this._eraseMasksAt(this._eventToPagePoint(e));
     } else if (this._activeTool === "mask" && this._activeMask) {
       const pt = this._eventToPagePoint(e);
       this._activeMask.x1 = pt.x;
@@ -330,12 +351,17 @@ export class AnnotationLayer {
       this._pan = null;
       return;
     }
-    if (this._activeTool === "pen" && this._active) {
-      if (this._active.points.length > 1) {
+    if (DRAW_TOOLS.has(this._activeTool) && this._active) {
+      const pts = this._active.points;
+      const valid = this._active.straight
+        ? pts.length === 2 && dist(pts[0], pts[1]) > MIN_STRAIGHT_LINE_PDF_LENGTH
+        : pts.length > 1;
+      if (valid) {
         this.strokes.push(this._active);
         this.onChange({ kind: "stroke", type: "add", stroke: this._active });
       }
       this._active = null;
+      this._redraw(); // clear a straight-line preview that didn't get saved
     } else if (this._activeTool === "eraser") {
       if (this._erasingStrokes && this._erasingStrokes.size > 0) {
         const removed = [];
@@ -347,6 +373,9 @@ export class AnnotationLayer {
         this.strokes = kept;
         this.onChange({ kind: "stroke", type: "erase", strokes: removed });
       }
+      this._erasingStrokes = null;
+      this._redraw();
+    } else if (this._activeTool === "mask-erase") {
       if (this._erasingMasks && this._erasingMasks.size > 0) {
         const removed = [];
         const kept = [];
@@ -357,7 +386,6 @@ export class AnnotationLayer {
         this.masks = kept;
         this.onChange({ kind: "mask", type: "erase", masks: removed });
       }
-      this._erasingStrokes = null;
       this._erasingMasks = null;
       this._redraw();
     } else if (this._activeTool === "mask" && this._activeMask) {
@@ -372,7 +400,10 @@ export class AnnotationLayer {
     this._activeTool = null;
   }
 
-  _eraseAt(pt) {
+  // Strokes only — the general eraser never touches memorization masks.
+  // Erasing a hidden mask needs the dedicated mask-eraser sub-tool, so a
+  // routine eraser swipe can't accidentally reveal what it's covering.
+  _eraseStrokesAt(pt) {
     const threshold = ERASE_RADIUS_CSS_PX / this.viewport.scale;
     let changed = false;
     this.strokes.forEach((stroke, i) => {
@@ -385,6 +416,12 @@ export class AnnotationLayer {
         }
       }
     });
+    if (changed) this._redraw();
+  }
+
+  _eraseMasksAt(pt) {
+    const threshold = ERASE_RADIUS_CSS_PX / this.viewport.scale;
+    let changed = false;
     this.masks.forEach((mask, i) => {
       if (this._erasingMasks.has(i)) return;
       if (
@@ -401,11 +438,12 @@ export class AnnotationLayer {
   }
 
   // p1/p2 are PDF-space points; converted to canvas CSS pixels here.
-  _drawSegment(p1, p2, color, baseWidth) {
+  _drawSegment(p1, p2, color, baseWidth, highlight) {
     const ctx = this.ctx;
     const c1 = this._toCanvasPoint(p1);
     const c2 = this._toCanvasPoint(p2);
     const pressure = clamp(p2.p, 0.3, 1);
+    ctx.globalAlpha = highlight ? HIGHLIGHT_ALPHA : 1;
     ctx.strokeStyle = color;
     ctx.lineWidth = baseWidth * this.viewport.scale * (0.6 + pressure * 0.6);
     ctx.lineCap = "round";
@@ -414,6 +452,7 @@ export class AnnotationLayer {
     ctx.moveTo(c1.x, c1.y);
     ctx.lineTo(c2.x, c2.y);
     ctx.stroke();
+    ctx.globalAlpha = 1;
   }
 
   _drawMask(mask) {
@@ -448,13 +487,13 @@ export class AnnotationLayer {
     this.strokes.forEach((stroke, i) => {
       if (this._erasingStrokes && this._erasingStrokes.has(i)) return;
       for (let j = 1; j < stroke.points.length; j++) {
-        this._drawSegment(stroke.points[j - 1], stroke.points[j], stroke.color, stroke.width);
+        this._drawSegment(stroke.points[j - 1], stroke.points[j], stroke.color, stroke.width, stroke.highlight);
       }
     });
     if (this._active) {
       const pts = this._active.points;
       for (let j = 1; j < pts.length; j++) {
-        this._drawSegment(pts[j - 1], pts[j], this._active.color, this._active.width);
+        this._drawSegment(pts[j - 1], pts[j], this._active.color, this._active.width, this._active.highlight);
       }
     }
     this.masks.forEach((mask, i) => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "pdf-note-v4";
+const CACHE_NAME = "pdf-note-v5";
 const APP_SHELL = [
   "./",
   "./index.html",

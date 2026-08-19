@@ -61,7 +61,7 @@ function drawStrokes(page, strokes, rgb) {
         end: { x: b.x, y: b.y },
         thickness: stroke.width,
         color: rgb(color.r, color.g, color.b),
-        opacity: 1,
+        opacity: stroke.highlight ? 0.4 : 1,
         lineCap: "Round",
       });
     }
